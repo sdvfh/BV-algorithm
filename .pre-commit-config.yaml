@@ -1,0 +1,89 @@
+default_language_version:
+  python: python3.12
+
+repos:
+  # Lint + format com Ruff
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.6
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-ast
+      - id: check-added-large-files
+      - id: check-case-conflict
+      - id: check-docstring-first
+      - id: check-merge-conflict
+      - id: check-symlinks
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-xml
+      - id: debug-statements
+        exclude: ^tests/
+      - id: destroyed-symlinks
+      - id: detect-aws-credentials
+        args: [--allow-missing-credentials]
+      - id: detect-private-key
+      - id: end-of-file-fixer
+        files: \.(py|sh|rst|yml|yaml)$
+        exclude: ^tests/test_changes/
+      - id: mixed-line-ending
+        files: \.(py|sh|rst|yml|yaml|toml|json)$
+      - id: pretty-format-json
+        files: \.json$
+        args: [--autofix]
+      - id: requirements-txt-fixer
+      - id: trailing-whitespace
+        files: \.(py|sh|rst|yml|yaml)$
+      - id: name-tests-test
+      - id: no-commit-to-branch
+        args: [--branch, main, --branch, master]
+      - id: forbid-new-submodules
+      - id: check-vcs-permalinks
+
+  - repo: https://github.com/myint/rstcheck
+    rev: v6.2.5
+    hooks:
+      - id: rstcheck
+        args: [--report=warning]
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+  - repo: https://github.com/scop/pre-commit-shfmt
+    rev: v3.12.0-2
+    hooks:
+      - id: shfmt
+        args: [-i, "2", -ci]
+
+  - repo: https://github.com/abravalheri/validate-pyproject
+    rev: v0.24.1
+    hooks:
+      - id: validate-pyproject
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: [--exclude-files, "nifi_templates/NiFi_Flow.json"]
+        stages: [pre-commit]
+
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.9.1
+    hooks:
+      - id: bandit
+        args: [-q, -r, .]
+        stages: [pre-push]
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.18.2
+    hooks:
+      - id: mypy
+        args: [--ignore-missing-imports]
+        stages: [pre-push]
