@@ -1,4 +1,5 @@
 import math
+import os
 
 from dotenv import load_dotenv
 import matplotlib.pyplot as plt
@@ -6,6 +7,10 @@ from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister
 from qiskit.transpiler import generate_preset_pass_manager
 from qiskit.visualization import plot_histogram
 from qiskit_aer import AerSimulator
+from qiskit_aer.noise import NoiseModel
+from qiskit_ibm_runtime import QiskitRuntimeService
+
+load_dotenv()
 
 
 def create_string_match(string_c, string_m):
@@ -16,6 +21,9 @@ def create_string_match(string_c, string_m):
     ]
 
     n_qubits_in = math.ceil(math.log2(len(results)))
+    if n_qubits_in < 4:
+        raise ValueError("Experiment with less than 5 qubits")
+    print(f"Experiment with {n_qubits_in + 1} qubits")
     M = sum(results)
     N = 2**n_qubits_in
 
@@ -25,6 +33,8 @@ def create_string_match(string_c, string_m):
     theta = 2 * math.asin(math.sqrt(M / N))
     n_rep_without_round = (math.pi / theta - 1) / 2
     n_rep = round(n_rep_without_round)
+    print("Exact number of repetitions: ", round(n_rep_without_round, 4))
+    print("Number of repetitions rounded: ", n_rep)
     reg_in = QuantumRegister(n_qubits_in)
     c_reg_in = ClassicalRegister(n_qubits_in)
     reg_out = QuantumRegister(1)
@@ -62,26 +72,29 @@ def create_diffusor(qc, reg_in):
     qc.h(reg_in)
 
 
-load_dotenv()
-
-string_comparison = "Banana!"
-string_match = "Ba"
+string_comparison = "Eu como banana e maçã pela tarde, e outra banana de noite!"
+string_match = "banana"
 
 qc = create_string_match(string_comparison, string_match)
-# service = QiskitRuntimeService(channel=os.getenv("IBM_QUANTUM_SERVICE"))
+service = QiskitRuntimeService(channel=os.getenv("IBM_QUANTUM_SERVICE"))
 
-# backend = FakeFez()
-backend = AerSimulator()
-# backend.refresh(service)
+for backend in service.backends():
+    if backend.name == "ibm_marrakesh":
+        continue
+    print("Backend: ", backend.name)
+    noise_model = NoiseModel.from_backend(backend)
 
-pass_manager = generate_preset_pass_manager(
-    optimization_level=3,
-    backend=backend,
-    layout_method="sabre",
-    routing_method="sabre",
-)
-qc_best = pass_manager.run(qc)
-result = backend.run(qc_best, shots=50).result()
-counts = result.get_counts()
-plot_histogram(counts)
-plt.show()
+    backend_noisy = AerSimulator(noise_model=noise_model)
+    pass_manager = generate_preset_pass_manager(
+        optimization_level=3,
+        backend=backend_noisy,
+        layout_method="sabre",
+        routing_method="sabre",
+    )
+    qc_best = pass_manager.run(qc)
+    result = backend_noisy.run(qc_best, shots=1024).result()
+    counts = result.get_counts()
+    plot_histogram(counts)
+    plt.title(f"Histogram for backend {backend.name}")
+    plt.tight_layout()
+    plt.show()
