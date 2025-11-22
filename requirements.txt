@@ -1,3 +1,6 @@
+matplotlib==3.10.7
+pylatexenc==2.10
 python-dotenv==1.2.1
 qiskit==2.2.3
+qiskit-aer==0.17.2
 qiskit-ibm-runtime==0.43.1
