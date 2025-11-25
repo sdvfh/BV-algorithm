@@ -17,6 +17,10 @@ def create_results(string_c, string_m):
     return [1 if string_c[i : i + len(string_m)] == string_m else 0 for i in range(len(string_c) - len(string_m) + 1)]
 
 
+def results_to_indices(results):
+    return [i for i, value in enumerate(results) if value]
+
+
 def create_string_match(string_c, string_m):
     if len(string_m) > len(string_c):
         raise ValueError("String match is bigger than string to compare")
@@ -74,45 +78,72 @@ def create_diffusor(qc, reg_in):
     qc.h(reg_in)
 
 
-string_comparison = "sergio encontrou uma nova estrategia para melhorar o algoritmo"
-string_match = "melhorar o algoritmo"
-results = create_results(string_comparison, string_match)
-
-qc = create_string_match(string_comparison, string_match)
-service = QiskitRuntimeService(channel=os.getenv("IBM_QUANTUM_SERVICE"))
-
-backend = AerSimulator()
-pass_manager = generate_preset_pass_manager(
-    optimization_level=3,
-    backend=backend,
-    layout_method="sabre",
-    routing_method="sabre",
-)
-qc_best = pass_manager.run(qc)
-result = backend.run(qc, shots=2048).result()
-counts = result.get_counts()
-plot_histogram(counts)
-plt.title(f"Histogram for backend {backend.name}")
-plt.tight_layout()
-plt.show()
-
-for backend in service.backends():
-    if backend.name == "ibm_marrakesh":
-        continue
-    print("Backend: ", backend.name)
-    noise_model = NoiseModel.from_backend(backend)
-
-    backend_noisy = AerSimulator(noise_model=noise_model)
+def run_with_backend(qc, backend, shots=2048):
     pass_manager = generate_preset_pass_manager(
         optimization_level=3,
-        backend=backend_noisy,
+        backend=backend,
         layout_method="sabre",
         routing_method="sabre",
     )
-    qc_best = pass_manager.run(qc)
-    result = backend_noisy.run(qc_best, shots=2048).result()
-    counts = result.get_counts()
-    plot_histogram(counts)
-    plt.title(f"Histogram for backend {backend.name}")
+    optimized = pass_manager.run(qc)
+    result = backend.run(optimized, shots=shots).result()
+    return result.get_counts()
+
+
+def extract_top_indices(counts, top_k):
+    ordered = sorted(counts.items(), key=lambda item: item[1], reverse=True)
+    indices = []
+    for bitstring, _ in ordered:
+        index = int(bitstring, 2)
+        if index not in indices:
+            indices.append(index)
+        if len(indices) >= top_k:
+            break
+    return sorted(indices)
+
+
+def compare_results(counts, expected_indices, backend_name, shots):
+    k = len(expected_indices)
+    top_indices = extract_top_indices(counts, k)
+    print(f"\n[Backend: {backend_name}] Shots={shots}")
+    print(f"Expected indices ({k}): {expected_indices}")
+    print(f"Measured top-{k} indices: {top_indices}")
+
+
+def main():
+    string_comparison = "sergio encontrou uma nova estrategia para melhorar o algoritmo"
+    string_match = "melhorar o algoritmo"
+
+    expected_results = create_results(string_comparison, string_match)
+    expected_indices = results_to_indices(expected_results)
+    print(f"Total matches (1s) in expected vector: {len(expected_indices)}")
+
+    qc = create_string_match(string_comparison, string_match)
+    shots = 2048
+
+    # Ideal simulation (no noise)
+    ideal_backend = AerSimulator()
+    ideal_counts = run_with_backend(qc, ideal_backend, shots)
+    plot_histogram(ideal_counts)
+    plt.title(f"Histogram for backend {ideal_backend.name}")
     plt.tight_layout()
     plt.show()
+    compare_results(ideal_counts, expected_indices, ideal_backend.name, shots)
+
+    # Noisy simulations based on real backends
+    service = QiskitRuntimeService(channel=os.getenv("IBM_QUANTUM_SERVICE"))
+    for backend in service.backends():
+        if backend.name == "ibm_marrakesh":
+            continue
+        noise_model = NoiseModel.from_backend(backend)
+        noisy_backend = AerSimulator(noise_model=noise_model)
+        noisy_counts = run_with_backend(qc, noisy_backend, shots)
+        plot_histogram(noisy_counts)
+        plt.title(f"Histogram for backend {backend.name}")
+        plt.tight_layout()
+        plt.show()
+        compare_results(noisy_counts, expected_indices, backend.name, shots)
+
+
+if __name__ == "__main__":
+    main()
