@@ -294,7 +294,7 @@ def process_experiment(sentence: str, pattern: str, service: QiskitRuntimeServic
 def main():
     service = None
     try:
-        service = QiskitRuntimeService(channel=os.getenv("IBM_QUANTUM_SERVICE"))
+        service = QiskitRuntimeService(channel=os.getenv("QISKIT_IBM_CHANNEL"))
     except Exception:
         print("IBM runtime service not initialized; skipping hardware runs.")
 
