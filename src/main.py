@@ -20,11 +20,11 @@ MAX_EXPERIMENTS = int(os.getenv("MAX_EXPERIMENTS", "25"))
 BACKEND_TARGETS = [name.strip() for name in os.getenv("IBM_TARGET_BACKENDS", "").split(",") if name.strip()]
 
 NOISE_LEVELS = {
-    "ultra_low": 1e-4,
+    "ultra-low": 1e-4,
     "low": 1e-3,
     "medium": 5e-3,
     "high": 1e-2,
-    "very_high": 5e-2,
+    "very-high": 5e-2,
 }
 
 EXPERIMENTS: list[tuple[str, str]] = [
