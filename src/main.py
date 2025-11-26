@@ -323,7 +323,8 @@ def render_horizontal_histogram(
     height = 0.8 / max(num_series, 1)
     y_positions = list(range(len(all_keys)))
 
-    fig, ax = plt.subplots(figsize=(10, 7), dpi=150)
+    height_dynamic = max(6.0, min(24.0, len(all_keys) * 0.35))
+    fig, ax = plt.subplots(figsize=(8, height_dynamic), dpi=150)
     for idx, counts in enumerate(counts_list):
         values = [counts.get(key, 0) for key in all_keys]
         offsets = [y + (idx - (num_series - 1) / 2) * height for y in y_positions]
