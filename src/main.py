@@ -20,6 +20,7 @@ MAX_EXPERIMENTS = int(os.getenv("MAX_EXPERIMENTS", "25"))
 BACKEND_TARGETS = [name.strip() for name in os.getenv("IBM_TARGET_BACKENDS", "").split(",") if name.strip()]
 RESULTS_PATH = os.getenv("RESULTS_CSV", "data/results_summary.csv")
 REQUIRED_NOISE_BACKENDS = {"ibm_fez", "ibm_torino"}
+HISTOGRAM_DIR = os.getenv("HISTOGRAM_DIR", "data/histograms")
 
 NOISE_LEVELS = {
     "ultra-low": 1e-4,
@@ -267,14 +268,25 @@ def report(
     record_result(experiment_id, sentence, pattern, label, noise_kind, noise_level, expected_indices, summary)
 
 
-def maybe_plot(title: str, counts: dict[str, int]):
+def prettify_title(text: str) -> str:
+    clean = text.replace("_", " ").replace("-", " ")
+    return " ".join(word.capitalize() for word in clean.split())
+
+
+def histogram_path(experiment_id: int, name: str) -> str:
+    safe = "".join(char if char.isalnum() or char in ("-", "_") else "_" for char in name).strip("_")
+    return os.path.join(HISTOGRAM_DIR, str(experiment_id), f"{safe}.pgf")
+
+
+def maybe_plot(title: str, counts: dict[str, int], experiment_id: int, filename_prefix: str):
     if not PLOT_HIST:
         return
     numeric_counts = {int(bitstring, 2): value for bitstring, value in counts.items()}
-    render_horizontal_histogram([numeric_counts], [title], None, title)
+    save_path = histogram_path(experiment_id, filename_prefix)
+    render_horizontal_histogram([numeric_counts], [title], None, title, save_path)
 
 
-def plot_noise_histogram(noise_kind: str, counts_by_level: dict[str, dict[str, int]]):
+def plot_noise_histogram(noise_kind: str, counts_by_level: dict[str, dict[str, int]], experiment_id: int):
     if not PLOT_HIST or not counts_by_level:
         return
     levels_ordered = list(NOISE_LEVELS.keys())
@@ -293,36 +305,47 @@ def plot_noise_histogram(noise_kind: str, counts_by_level: dict[str, dict[str, i
         "very-high": "#9467bd",
     }
     color_list = [colors.get(level) for level in legends]
-    render_horizontal_histogram(data, legends, color_list, f"{noise_kind} noise sweep")
+    render_horizontal_histogram(data, legends, color_list, f"{prettify_title(noise_kind)} noise sweep")
 
 
 def render_horizontal_histogram(
-    counts_list: list[dict[int, int]], legends: list[str], colors: list[str] | None, title: str
+    counts_list: list[dict[int, int]],
+    legends: list[str],
+    colors: list[str] | None,
+    title: str,
+    save_path: str | None = None,
 ):
     if not counts_list:
         return
     all_keys = sorted({key for counts in counts_list for key in counts})
+    bit_width = max(1, max(all_keys).bit_length()) if all_keys else 1
     num_series = len(counts_list)
     height = 0.8 / max(num_series, 1)
     y_positions = list(range(len(all_keys)))
 
-    plt.figure(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(10, 7), dpi=150)
     for idx, counts in enumerate(counts_list):
         values = [counts.get(key, 0) for key in all_keys]
         offsets = [y + (idx - (num_series - 1) / 2) * height for y in y_positions]
         kwargs = {}
         if colors and idx < len(colors):
             kwargs["color"] = colors[idx]
-        plt.barh(offsets, values, height=height, label=legends[idx] if legends else None, **kwargs)
+        ax.barh(offsets, values, height=height, label=legends[idx] if legends else None, **kwargs, zorder=2)
 
-    plt.yticks(y_positions, all_keys)
-    plt.xlabel("Counts")
-    plt.ylabel("Bitstring (as int)")
-    if legends:
-        plt.legend(title="Intensity")
-    plt.title(title)
-    plt.tight_layout()
-    plt.gca().invert_yaxis()
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels([format(key, f"0{bit_width}b") for key in all_keys])
+    ax.set_xlabel("Counts")
+    ax.set_ylabel("Bitstring")
+    if legends and len(legends) > 1:
+        ax.legend(title="Intensity")
+    ax.set_title(prettify_title(title))
+    ax.grid(axis="x", linestyle="--", linewidth=0.8, color="#999999", alpha=0.6, zorder=0)
+    ax.set_axisbelow(True)
+    fig.tight_layout()
+    ax.invert_yaxis()
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        fig.savefig(save_path, format="pgf")
     plt.show()
 
 
@@ -337,7 +360,7 @@ def simulate_with_noise_kinds(qc, expected_indices, shots: int, experiment_id: i
             counts_by_level[level] = counts
             summary = summarize_counts(counts, expected_indices, shots)
             report(label, expected_indices, summary, experiment_id, sentence, pattern, noise_kind, level)
-        plot_noise_histogram(noise_kind, counts_by_level)
+        plot_noise_histogram(noise_kind, counts_by_level, experiment_id)
 
 
 def simulate_with_backend_noise(
@@ -365,7 +388,7 @@ def simulate_with_backend_noise(
             "backend_noise",
             backend.name,
         )
-        maybe_plot(f"noisy-sim-{backend.name}", counts)
+        maybe_plot(f"noisy-sim-{backend.name}", counts, experiment_id, f"noisy-sim-{backend.name}")
 
 
 def run_on_real_backends(
@@ -385,7 +408,7 @@ def run_on_real_backends(
             "hardware",
             backend.name,
         )
-        maybe_plot(f"real-{backend.name}", counts)
+        maybe_plot(f"real-{backend.name}", counts, experiment_id, f"real-{backend.name}")
 
 
 def persist_results():
@@ -425,7 +448,7 @@ def process_experiment(experiment_id: int, sentence: str, pattern: str, service:
     counts_ideal = run_with_backend(qc, ideal_backend, SHOTS)
     summary_ideal = summarize_counts(counts_ideal, expected_indices, SHOTS)
     report("ideal-simulator", expected_indices, summary_ideal, experiment_id, sentence, pattern, "ideal", "none")
-    maybe_plot("ideal-simulator", counts_ideal)
+    maybe_plot("ideal-simulator", counts_ideal, experiment_id, "ideal-simulator")
 
     simulate_with_noise_kinds(qc, expected_indices, SHOTS, experiment_id, sentence, pattern)
 
