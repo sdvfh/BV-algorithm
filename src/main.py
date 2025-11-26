@@ -346,8 +346,13 @@ def render_horizontal_histogram(
     ax.invert_yaxis()
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        fig.savefig(save_path, format="pgf")
-    plt.show()
+        try:
+            fig.savefig(save_path, format="pgf")
+        except Exception as err:
+            fallback_path = os.path.splitext(save_path)[0] + ".png"
+            print(f"PGF save failed ({err}); saving PNG fallback at {fallback_path}")
+            fig.savefig(fallback_path, format="png", dpi=200)
+    # plt.show()
 
 
 def simulate_with_noise_kinds(qc, expected_indices, shots: int, experiment_id: int, sentence: str, pattern: str):
