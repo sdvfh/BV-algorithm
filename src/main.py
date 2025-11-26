@@ -1,3 +1,4 @@
+import csv
 import math
 import os
 
@@ -5,7 +6,6 @@ from dotenv import load_dotenv
 import matplotlib.pyplot as plt
 from qiskit import ClassicalRegister, QuantumCircuit, QuantumRegister
 from qiskit.transpiler import generate_preset_pass_manager
-from qiskit.visualization import plot_histogram
 from qiskit_aer import AerSimulator
 from qiskit_aer.noise import NoiseModel
 from qiskit_aer.noise.errors import amplitude_damping_error, depolarizing_error, phase_damping_error
@@ -18,6 +18,8 @@ SIM_SEED = int(os.getenv("SIM_SEED", "1337"))
 PLOT_HIST = bool(int(os.getenv("PLOT_HIST", "0")))
 MAX_EXPERIMENTS = int(os.getenv("MAX_EXPERIMENTS", "25"))
 BACKEND_TARGETS = [name.strip() for name in os.getenv("IBM_TARGET_BACKENDS", "").split(",") if name.strip()]
+RESULTS_PATH = os.getenv("RESULTS_CSV", "data/results_summary.csv")
+REQUIRED_NOISE_BACKENDS = {"ibm_fez", "ibm_torino"}
 
 NOISE_LEVELS = {
     "ultra-low": 1e-4,
@@ -58,6 +60,9 @@ EXPERIMENTS: list[tuple[str, str]] = [
     ("uma tempestade forte surgiu de repente interrompendo o passeio", "de repente interrompendo o passeio"),
     ("o som do rio corria suavemente enquanto caminhavamos pela trilha", "rio corria suavemente"),
 ]
+
+
+RESULT_ROWS: list[dict[str, str]] = []
 
 
 def create_results(string_c, string_m):
@@ -218,57 +223,196 @@ def summarize_counts(counts: dict[str, int], expected_indices: list[int], shots:
     }
 
 
-def report(label: str, expected_indices: list[int], summary: dict[str, object]):
+def record_result(
+    experiment_id: int,
+    sentence: str,
+    pattern: str,
+    backend_label: str,
+    noise_kind: str,
+    noise_level: str,
+    expected_indices: list[int],
+    summary: dict[str, object],
+):
+    RESULT_ROWS.append(
+        {
+            "experiment_id": str(experiment_id),
+            "sentence": sentence,
+            "pattern": pattern,
+            "backend_label": backend_label,
+            "noise_kind": noise_kind,
+            "noise_level": noise_level,
+            "expected_indices": ",".join(str(i) for i in expected_indices),
+            "top_indices": ",".join(str(i) for i in summary["top_indices"]),
+            "overlap": str(summary["overlap"]),
+            "success_prob": f"{summary['success_prob']:.6f}",
+        }
+    )
+
+
+def report(
+    label: str,
+    expected_indices: list[int],
+    summary: dict[str, object],
+    experiment_id: int,
+    sentence: str,
+    pattern: str,
+    noise_kind: str,
+    noise_level: str,
+):
     print(f"\n[{label}] Expected: {sorted(expected_indices)}")
     print(
         f"Top indices: {summary['top_indices']} | Overlap: {summary['overlap']} "
         f"| Success prob: {summary['success_prob']:.4f}"
     )
+    record_result(experiment_id, sentence, pattern, label, noise_kind, noise_level, expected_indices, summary)
 
 
 def maybe_plot(title: str, counts: dict[str, int]):
     if not PLOT_HIST:
         return
-    plot_histogram(counts)
+    numeric_counts = {int(bitstring, 2): value for bitstring, value in counts.items()}
+    render_horizontal_histogram([numeric_counts], [title], None, title)
+
+
+def plot_noise_histogram(noise_kind: str, counts_by_level: dict[str, dict[str, int]]):
+    if not PLOT_HIST or not counts_by_level:
+        return
+    levels_ordered = list(NOISE_LEVELS.keys())
+    data = []
+    legends = []
+    for level in levels_ordered:
+        if level in counts_by_level:
+            numeric_counts = {int(bitstring, 2): value for bitstring, value in counts_by_level[level].items()}
+            data.append(numeric_counts)
+            legends.append(level)
+    colors = {
+        "ultra-low": "#2ca02c",
+        "low": "#1f77b4",
+        "medium": "#ff7f0e",
+        "high": "#d62728",
+        "very-high": "#9467bd",
+    }
+    color_list = [colors.get(level) for level in legends]
+    render_horizontal_histogram(data, legends, color_list, f"{noise_kind} noise sweep")
+
+
+def render_horizontal_histogram(
+    counts_list: list[dict[int, int]], legends: list[str], colors: list[str] | None, title: str
+):
+    if not counts_list:
+        return
+    all_keys = sorted({key for counts in counts_list for key in counts})
+    num_series = len(counts_list)
+    height = 0.8 / max(num_series, 1)
+    y_positions = list(range(len(all_keys)))
+
+    plt.figure(figsize=(8, 6))
+    for idx, counts in enumerate(counts_list):
+        values = [counts.get(key, 0) for key in all_keys]
+        offsets = [y + (idx - (num_series - 1) / 2) * height for y in y_positions]
+        kwargs = {}
+        if colors and idx < len(colors):
+            kwargs["color"] = colors[idx]
+        plt.barh(offsets, values, height=height, label=legends[idx] if legends else None, **kwargs)
+
+    plt.yticks(y_positions, all_keys)
+    plt.xlabel("Counts")
+    plt.ylabel("Bitstring (as int)")
+    if legends:
+        plt.legend(title="Intensity")
     plt.title(title)
     plt.tight_layout()
+    plt.gca().invert_yaxis()
     plt.show()
 
 
-def simulate_with_noise_kinds(qc, expected_indices, shots: int):
+def simulate_with_noise_kinds(qc, expected_indices, shots: int, experiment_id: int, sentence: str, pattern: str):
     for noise_kind in ["amplitude", "phase", "depolarizing", "combined"]:
+        counts_by_level: dict[str, dict[str, int]] = {}
         for level in NOISE_LEVELS:
             label = f"simulator-{noise_kind}-{level}"
             noise_model = build_noise_model(noise_kind, level)
             backend = make_backend(noise_model)
             counts = run_with_backend(qc, backend, shots)
+            counts_by_level[level] = counts
             summary = summarize_counts(counts, expected_indices, shots)
-            report(label, expected_indices, summary)
-            maybe_plot(f"{label}", counts)
+            report(label, expected_indices, summary, experiment_id, sentence, pattern, noise_kind, level)
+        plot_noise_histogram(noise_kind, counts_by_level)
 
 
-def simulate_with_backend_noise(qc, expected_indices, shots: int, service: QiskitRuntimeService):
-    for backend in service.backends():
-        if backend.name in {"ibm_marrakesh"}:  # skip if unavailable
+def simulate_with_backend_noise(
+    qc, expected_indices, shots: int, service: QiskitRuntimeService, experiment_id: int, sentence: str, pattern: str
+):
+    backend_names = {backend.name for backend in service.backends() if backend.name not in {"ibm_marrakesh"}}
+    backend_names.update(REQUIRED_NOISE_BACKENDS)
+    for backend_name in backend_names:
+        try:
+            backend = service.backend(backend_name)
+        except Exception:
+            print(f"Backend '{backend_name}' unavailable; skipping noise emulation.")
             continue
         noise_model = NoiseModel.from_backend(backend)
         backend_noisy = make_backend(noise_model)
         counts = run_with_backend(qc, backend_noisy, shots)
         summary = summarize_counts(counts, expected_indices, shots)
-        report(f"noisy-sim-{backend.name}", expected_indices, summary)
+        report(
+            f"noisy-sim-{backend.name}",
+            expected_indices,
+            summary,
+            experiment_id,
+            sentence,
+            pattern,
+            "backend_noise",
+            backend.name,
+        )
         maybe_plot(f"noisy-sim-{backend.name}", counts)
 
 
-def run_on_real_backends(qc, expected_indices, shots: int, service: QiskitRuntimeService):
+def run_on_real_backends(
+    qc, expected_indices, shots: int, service: QiskitRuntimeService, experiment_id: int, sentence: str, pattern: str
+):
     for backend_name in BACKEND_TARGETS:
         backend = service.backend(backend_name)
         counts = run_with_backend(qc, backend, shots)
         summary = summarize_counts(counts, expected_indices, shots)
-        report(f"real-{backend.name}", expected_indices, summary)
+        report(
+            f"real-{backend.name}",
+            expected_indices,
+            summary,
+            experiment_id,
+            sentence,
+            pattern,
+            "hardware",
+            backend.name,
+        )
         maybe_plot(f"real-{backend.name}", counts)
 
 
-def process_experiment(sentence: str, pattern: str, service: QiskitRuntimeService | None):
+def persist_results():
+    if not RESULT_ROWS:
+        print("\nNo results to save.")
+        return
+    os.makedirs(os.path.dirname(RESULTS_PATH) or ".", exist_ok=True)
+    fieldnames = [
+        "experiment_id",
+        "sentence",
+        "pattern",
+        "backend_label",
+        "noise_kind",
+        "noise_level",
+        "expected_indices",
+        "top_indices",
+        "overlap",
+        "success_prob",
+    ]
+    with open(RESULTS_PATH, "w", newline="", encoding="utf-8") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(RESULT_ROWS)
+    print(f"\nSaved summary table to {RESULTS_PATH} ({len(RESULT_ROWS)} rows).")
+
+
+def process_experiment(experiment_id: int, sentence: str, pattern: str, service: QiskitRuntimeService | None):
     expected_results = create_results(sentence, pattern)
     expected_indices = results_to_indices(expected_results)
     if len(expected_indices) == 0:
@@ -280,15 +424,15 @@ def process_experiment(sentence: str, pattern: str, service: QiskitRuntimeServic
     ideal_backend = make_backend()
     counts_ideal = run_with_backend(qc, ideal_backend, SHOTS)
     summary_ideal = summarize_counts(counts_ideal, expected_indices, SHOTS)
-    report("ideal-simulator", expected_indices, summary_ideal)
+    report("ideal-simulator", expected_indices, summary_ideal, experiment_id, sentence, pattern, "ideal", "none")
     maybe_plot("ideal-simulator", counts_ideal)
 
-    simulate_with_noise_kinds(qc, expected_indices, SHOTS)
+    simulate_with_noise_kinds(qc, expected_indices, SHOTS, experiment_id, sentence, pattern)
 
     if service:
-        simulate_with_backend_noise(qc, expected_indices, SHOTS, service)
+        simulate_with_backend_noise(qc, expected_indices, SHOTS, service, experiment_id, sentence, pattern)
         if BACKEND_TARGETS:
-            run_on_real_backends(qc, expected_indices, SHOTS, service)
+            run_on_real_backends(qc, expected_indices, SHOTS, service, experiment_id, sentence, pattern)
 
 
 def main():
@@ -300,7 +444,8 @@ def main():
 
     for i, (sentence, pattern) in enumerate(EXPERIMENTS[:MAX_EXPERIMENTS], start=1):
         print(f"\n=== Experiment {i}: pattern='{pattern}' ===")
-        process_experiment(sentence, pattern, service)
+        process_experiment(i, sentence, pattern, service)
+    persist_results()
 
 
 if __name__ == "__main__":
