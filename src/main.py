@@ -305,7 +305,8 @@ def plot_noise_histogram(noise_kind: str, counts_by_level: dict[str, dict[str, i
         "very-high": "#9467bd",
     }
     color_list = [colors.get(level) for level in legends]
-    render_horizontal_histogram(data, legends, color_list, f"{prettify_title(noise_kind)} noise sweep")
+    save_path = histogram_path(experiment_id, f"{noise_kind}_noise_sweep")
+    render_horizontal_histogram(data, legends, color_list, f"{prettify_title(noise_kind)} noise sweep", save_path)
 
 
 def render_horizontal_histogram(
