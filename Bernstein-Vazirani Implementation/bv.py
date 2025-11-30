@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 import csv
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 
@@ -28,6 +29,7 @@ DEFAULT_SHOTS = 1024
 DEFAULT_SEED = 42
 EXCLUDED_BACKENDS = {"ibm_marrakesh"}
 RESULTS_ROOT = Path("Plot_results")
+HISTOGRAM_DATA_ROOT = RESULTS_ROOT / "hist_data"
 READOUT_NOISE_LEVELS = {
     # Real backends (fez ≈1.0e-2, torino ≈3.0e-2) should sit inside "low".
     # Higher levels explore stress scenarios beyond current hardware error rates.
@@ -154,13 +156,31 @@ def build_plot_path(category: str, secret: str, backend_name: str | None = None)
     return RESULTS_ROOT / category / filename
 
 
-def should_skip_plot(path: Path) -> bool:
-    """Determine whether a plot should be skipped because the file already exists."""
-    if path.exists():
-        print(f"Skipping run; plot already exists at {path}")
-        return True
+def histogram_json_path(category: str, secret: str, backend_name: str | None = None, tag: str | None = None) -> Path:
+    """Create the output path for serialized histogram counts."""
+    suffix = f"_{backend_name}" if backend_name else ""
+    tag_part = f"_{tag}" if tag else ""
+    filename = f"{secret}{suffix}{tag_part}.json"
+    return HISTOGRAM_DATA_ROOT / category / filename
+
+
+def save_histogram_data(path: Path, counts: dict[str, int]) -> None:
+    """Persist histogram counts to JSON."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    return False
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(counts, f, indent=2)
+
+
+def load_histogram_data(path: Path) -> dict[str, int] | None:
+    """Load histogram counts from JSON if available."""
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as err:
+        print(f"Failed to read histogram data from {path}: {err}")
+        return None
 
 
 def plot_and_save(counts, title: str, output_path: Path) -> None:
@@ -195,6 +215,11 @@ def record_from_counts(category: str, backend_name: str, secret: str, counts: di
 
 def run_ideal_simulation(secret: str) -> RunRecord | None:
     """Execute the Bernstein-Vazirani circuit on an ideal simulator."""
+    json_path = histogram_json_path("ideal", secret)
+    cached = load_histogram_data(json_path)
+    if cached is not None:
+        return record_from_counts("ideal", "aer_simulator_ideal", secret, cached)
+
     circuit = bernstein_vazirani_circuit(secret)
     backend = AerSimulator(seed_simulator=DEFAULT_SEED)
     compiled = transpile(
@@ -208,11 +233,17 @@ def run_ideal_simulation(secret: str) -> RunRecord | None:
 
     result = backend.run(compiled, shots=DEFAULT_SHOTS, seed_simulator=DEFAULT_SEED).result()
     counts = result.get_counts()
+    save_histogram_data(json_path, counts)
     return record_from_counts("ideal", "aer_simulator_ideal", secret, counts)
 
 
 def run_noisy_simulation(secret: str, backend) -> RunRecord | None:
     """Execute the circuit on a noisy simulator derived from a specific backend."""
+    json_path = histogram_json_path("noisy", secret, backend_name=backend.name)
+    cached = load_histogram_data(json_path)
+    if cached is not None:
+        return record_from_counts("noisy", backend.name, secret, cached)
+
     circuit = bernstein_vazirani_circuit(secret)
     noise_model = NoiseModel.from_backend(backend)
     noisy_backend = AerSimulator(noise_model=noise_model, seed_simulator=DEFAULT_SEED)
@@ -229,11 +260,17 @@ def run_noisy_simulation(secret: str, backend) -> RunRecord | None:
     result = noisy_backend.run(compiled, shots=DEFAULT_SHOTS, seed_simulator=DEFAULT_SEED).result()
     counts = result.get_counts()
 
+    save_histogram_data(json_path, counts)
     return record_from_counts("noisy", backend.name, secret, counts)
 
 
 def run_real_execution(secret: str, backend) -> RunRecord | None:
     """Execute the circuit on a real backend using the runtime Sampler."""
+    json_path = histogram_json_path("real", secret, backend_name=backend.name)
+    cached = load_histogram_data(json_path)
+    if cached is not None:
+        return record_from_counts("real", backend.name, secret, cached)
+
     circuit = bernstein_vazirani_circuit(secret)
     compiled = transpile(
         circuit,
@@ -251,6 +288,7 @@ def run_real_execution(secret: str, backend) -> RunRecord | None:
     bitarray = result[0].data.c
     counts = bitarray.get_counts()
 
+    save_histogram_data(json_path, counts)
     return record_from_counts("real", backend.name, secret, counts)
 
 
@@ -261,33 +299,45 @@ def run_readout_noise_simulations(secret: str) -> list[RunRecord]:
     counts_by_level: dict[str, dict[str, int]] = {}
     ideal_counts: dict[str, int] = {}
 
-    # Ideal baseline for overlaying on the histogram.
-    ideal_backend = AerSimulator(seed_simulator=DEFAULT_SEED)
-    ideal_pm = generate_preset_pass_manager(
-        optimization_level=3,
-        backend=ideal_backend,
-        layout_method="sabre",
-        routing_method="sabre",
-        seed_transpiler=DEFAULT_SEED,
-    )
-    ideal_compiled = ideal_pm.run(circuit)
-    ideal_result = ideal_backend.run(ideal_compiled, shots=DEFAULT_SHOTS, seed_simulator=DEFAULT_SEED).result()
-    ideal_counts = ideal_result.get_counts()
-
-    for level, probability in READOUT_NOISE_LEVELS.items():
-        noise_model = build_readout_noise_model(probability)
-        backend = AerSimulator(noise_model=noise_model, seed_simulator=DEFAULT_SEED)
-        pass_manager = generate_preset_pass_manager(
+    # Ideal baseline for overlaying on the histogram (load or compute once).
+    ideal_json = histogram_json_path("ideal", secret)
+    cached_ideal = load_histogram_data(ideal_json)
+    if cached_ideal is not None:
+        ideal_counts = cached_ideal
+    else:
+        ideal_backend = AerSimulator(seed_simulator=DEFAULT_SEED)
+        ideal_pm = generate_preset_pass_manager(
             optimization_level=3,
-            backend=backend,
+            backend=ideal_backend,
             layout_method="sabre",
             routing_method="sabre",
             seed_transpiler=DEFAULT_SEED,
         )
-        compiled = pass_manager.run(circuit)
+        ideal_compiled = ideal_pm.run(circuit)
+        ideal_result = ideal_backend.run(ideal_compiled, shots=DEFAULT_SHOTS, seed_simulator=DEFAULT_SEED).result()
+        ideal_counts = ideal_result.get_counts()
+        save_histogram_data(ideal_json, ideal_counts)
 
-        result = backend.run(compiled, shots=DEFAULT_SHOTS, seed_simulator=DEFAULT_SEED).result()
-        counts = result.get_counts()
+    for level, probability in READOUT_NOISE_LEVELS.items():
+        json_path = histogram_json_path("readout_noise", secret, tag=level)
+        cached_counts = load_histogram_data(json_path)
+        if cached_counts is not None:
+            counts = cached_counts
+        else:
+            noise_model = build_readout_noise_model(probability)
+            backend = AerSimulator(noise_model=noise_model, seed_simulator=DEFAULT_SEED)
+            pass_manager = generate_preset_pass_manager(
+                optimization_level=3,
+                backend=backend,
+                layout_method="sabre",
+                routing_method="sabre",
+                seed_transpiler=DEFAULT_SEED,
+            )
+            compiled = pass_manager.run(circuit)
+
+            result = backend.run(compiled, shots=DEFAULT_SHOTS, seed_simulator=DEFAULT_SEED).result()
+            counts = result.get_counts()
+            save_histogram_data(json_path, counts)
         counts_by_level[level] = counts
         records.append(record_from_counts("readout_noise", f"aer_readout_{level}", secret, counts))
 
