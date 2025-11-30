@@ -26,6 +26,7 @@ from qiskit_aer.noise.errors import (
     ReadoutError,
     amplitude_damping_error,
     depolarizing_error,
+    phase_amplitude_damping_error,
     phase_damping_error,
     thermal_relaxation_error,
 )
@@ -79,8 +80,11 @@ CUSTOM_NOISE_KINDS = [
     "depolarizing",
     "amplitude_damping",
     "phase_damping",
+    "phase_amplitude_damping",
     "cx_gate",
     "sx_gate",
+    "h_gate",
+    "phase_amplitude_h_gate",
 ]
 SECRET_STRINGS = [
     "10000",
@@ -385,6 +389,11 @@ def build_readout_noise_model(probability: float) -> NoiseModel:
     return noise_model
 
 
+def clamp_phase_amp_param(probability: float) -> float:
+    """Ensure amplitude/phase damping parameters remain in the valid region (sum <= 1)."""
+    return min(probability, 0.49)
+
+
 def build_custom_noise_model(noise_kind: str, level: str) -> NoiseModel:
     """Construct custom noise models anchored to real backend error rates."""
     if level not in LEVEL_MULTIPLIERS:
@@ -430,6 +439,17 @@ def build_custom_noise_model(noise_kind: str, level: str) -> NoiseModel:
         add_2q_error(noise_model, err_2q)
         return noise_model
 
+    if noise_kind == "phase_amplitude_damping":
+        pa_param_1q = clamp_phase_amp_param(BASE_DEP1_P * mult)
+        pa_param_2q = clamp_phase_amp_param(BASE_DEP2_P * mult)
+        err_1q = phase_amplitude_damping_error(pa_param_1q, pa_param_1q)
+        err_2q = phase_amplitude_damping_error(pa_param_2q, pa_param_2q).tensor(
+            phase_amplitude_damping_error(pa_param_2q, pa_param_2q)
+        )
+        add_1q_error(noise_model, err_1q)
+        add_2q_error(noise_model, err_2q)
+        return noise_model
+
     if noise_kind == "cx_gate":
         err_2q = depolarizing_error(min(BASE_CX_P * mult, 1.0), 2)
         add_2q_error(noise_model, err_2q, gates=["cx"])
@@ -438,6 +458,26 @@ def build_custom_noise_model(noise_kind: str, level: str) -> NoiseModel:
     if noise_kind == "sx_gate":
         err_1q = depolarizing_error(min(BASE_SX_P * mult, 1.0), 1)
         add_1q_error(noise_model, err_1q, gates=["sx"])
+        return noise_model
+
+    if noise_kind == "h_gate":
+        err_1q = depolarizing_error(min(BASE_SX_P * mult, 1.0), 1)
+        add_1q_error(noise_model, err_1q, gates=["h"])
+        return noise_model
+
+    if noise_kind == "phase_amplitude_h_gate":
+        pa_param_1q = clamp_phase_amp_param(BASE_DEP1_P * mult)
+        pa_param_2q = clamp_phase_amp_param(BASE_DEP2_P * mult)
+        err_1q = phase_amplitude_damping_error(pa_param_1q, pa_param_1q)
+        err_2q = phase_amplitude_damping_error(pa_param_2q, pa_param_2q).tensor(
+            phase_amplitude_damping_error(pa_param_2q, pa_param_2q)
+        )
+        base_gates_no_h = ["id", "x", "sx", "rz", "rx"]
+        add_1q_error(noise_model, err_1q, gates=base_gates_no_h)
+        add_2q_error(noise_model, err_2q)
+        h_gate_error = depolarizing_error(min(BASE_SX_P * mult, 1.0), 1)
+        combined_h_error = err_1q.compose(h_gate_error)
+        add_1q_error(noise_model, combined_h_error, gates=["h"])
         return noise_model
 
     raise ValueError(f"Unknown noise kind {noise_kind}")
