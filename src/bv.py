@@ -57,6 +57,13 @@ READOUT_IDEAL_COLOR = "#f1c40f"  # bright gold to stand apart from error scale
 IDEAL_OVERLAY_COLOR = READOUT_IDEAL_COLOR
 EMULATED_COLOR = "#1f77b4"
 REAL_OVERLAY_COLOR = "#c43c39"
+READOUT_LEVEL_TRANSLATIONS = {
+    "ultra-low": "ultrabaixo",
+    "low": "baixo",
+    "medium": "medio",
+    "high": "alto",
+    "very-high": "muito alto",
+}
 LEVEL_MULTIPLIERS = {
     "ultra-low": 0.5,
     "low": 2.0,
@@ -225,7 +232,8 @@ def plot_and_save(counts, title: str, output_path: Path) -> None:
     """Plot histogram counts with a standard title and save to disk."""
     plt.clf()
     plot_histogram(counts)
-    plt.title(title)
+    plt.xlabel("Contagens")
+    plt.ylabel("Bitstring")
     plt.tight_layout()
     plt.savefig(output_path)
     plt.close()
@@ -508,7 +516,7 @@ def render_horizontal_histogram(
     counts_list: list[dict[int, int]],
     legends: list[str],
     colors: list[str] | None,
-    title: str,
+    legend_title: str | None,
     save_path: Path,
 ) -> None:
     """Render a combined histogram similar to src/main.py (horizontal stacked bars)."""
@@ -532,11 +540,10 @@ def render_horizontal_histogram(
 
     ax.set_yticks(y_positions)
     ax.set_yticklabels([format(key, f"0{bit_width}b") for key in all_keys])
-    ax.set_xlabel("Counts")
-    ax.set_ylabel("Bitstring")
+    ax.set_xlabel("Contagens")
+    ax.set_ylabel("Cadeia de bits")
     if legends and len(legends) > 1:
-        ax.legend(title="Intensity")
-    ax.set_title(title)
+        ax.legend(title=legend_title)
     ax.grid(axis="x", linestyle="--", linewidth=0.8, color="#999999", alpha=0.6, zorder=0)
     ax.set_axisbelow(True)
     fig.tight_layout()
@@ -560,13 +567,12 @@ def plot_readout_sweep(secret: str, counts_by_level: dict[str, dict[str, int]], 
         if level in counts_by_level:
             numeric_counts = {int(bitstring, 2): value for bitstring, value in counts_by_level[level].items()}
             counts_list.append(numeric_counts)
-            legends.append(level)
+            legends.append(READOUT_LEVEL_TRANSLATIONS.get(level, level))
             colors.append(READOUT_COLORS.get(level, "#333333"))
     if not counts_list:
         return
-    title = f"Readout error sweep - secret {secret}"
     save_path = RESULTS_ROOT / "custom_noise" / "readout" / f"{secret}_readout_sweep.png"
-    render_horizontal_histogram(counts_list, legends, colors, title, save_path)
+    render_horizontal_histogram(counts_list, legends, colors, "Intensidade", save_path)
 
 
 def plot_custom_noise_sweep(
@@ -585,13 +591,12 @@ def plot_custom_noise_sweep(
         if level in counts_by_level:
             numeric_counts = {int(bitstring, 2): value for bitstring, value in counts_by_level[level].items()}
             counts_list.append(numeric_counts)
-            legends.append(level)
+            legends.append(READOUT_LEVEL_TRANSLATIONS.get(level, level))
             colors.append(READOUT_COLORS.get(level, "#333333"))
     if not counts_list:
         return
-    title = f"{noise_kind} sweep - secret {secret}"
     save_path = RESULTS_ROOT / "custom_noise" / noise_kind / f"{secret}_{noise_kind}_sweep.png"
-    render_horizontal_histogram(counts_list, legends, colors, title, save_path)
+    render_horizontal_histogram(counts_list, legends, colors, "Intensidade", save_path)
 
 
 def plot_backend_comparison(
@@ -613,7 +618,7 @@ def plot_backend_comparison(
 
     if emulated_counts:
         counts_list.append({int(bitstring, 2): value for bitstring, value in emulated_counts.items()})
-        legends.append(f"emulated-{backend_name}")
+        legends.append(backend_name)
         colors.append(EMULATED_COLOR)
 
     if real_counts:
@@ -624,9 +629,8 @@ def plot_backend_comparison(
     if not counts_list:
         return
 
-    title = f"{backend_name} emulation vs ideal" if not real_counts else f"{backend_name} emulation vs ideal vs real"
     save_path = RESULTS_ROOT / "backend_comparison" / f"{secret}_{backend_name}.png"
-    render_horizontal_histogram(counts_list, legends, colors, title, save_path)
+    render_horizontal_histogram(counts_list, legends, colors, "Emulação", save_path)
 
 
 def run_custom_noise_simulations(secret: str, ideal_counts: dict[str, int]) -> list[RunRecord]:
