@@ -216,7 +216,7 @@ def histogram_json_path(category: str, secret: str, backend_name: str | None = N
 
 def save_histogram_data(path: Path, counts: dict[str, int]) -> None:
     """Persist histogram counts to JSON."""
-    logger.debug("Saving histogram data to %s", path)
+    logger.info("Saving histogram data to %s", path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         json.dump(counts, f, indent=2)
@@ -225,12 +225,12 @@ def save_histogram_data(path: Path, counts: dict[str, int]) -> None:
 def load_histogram_data(path: Path) -> dict[str, int] | None:
     """Load histogram counts from JSON if available."""
     if not path.exists():
-        logger.debug("Histogram cache miss at %s", path)
+        logger.info("Histogram cache miss at %s", path)
         return None
     try:
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
-            logger.debug("Loaded histogram cache from %s", path)
+            logger.info("Loaded histogram cache from %s", path)
             return data
     except Exception as err:
         logger.warning("Failed to read histogram data from %s: %s", path, err)
@@ -386,7 +386,7 @@ def run_readout_noise_simulations(secret: str) -> list[RunRecord]:
         if cached_counts is not None:
             counts = cached_counts
         else:
-            logger.debug("Simulating readout noise level %s (p=%s) for secret %s", level, probability, secret)
+            logger.info("Simulating readout noise level %s (p=%s) for secret %s", level, probability, secret)
             noise_model = build_readout_noise_model(probability)
             backend = AerSimulator(noise_model=noise_model, seed_simulator=DEFAULT_SEED)
             pass_manager = generate_preset_pass_manager(
@@ -427,7 +427,7 @@ def build_custom_noise_model(noise_kind: str, level: str) -> NoiseModel:
     if level not in LEVEL_MULTIPLIERS:
         raise ValueError(f"Unknown noise level {level}")
     mult = LEVEL_MULTIPLIERS[level]
-    logger.debug("Building custom noise model kind=%s level=%s multiplier=%s", noise_kind, level, mult)
+    logger.info("Building custom noise model kind=%s level=%s multiplier=%s", noise_kind, level, mult)
     noise_model = NoiseModel()
 
     if noise_kind == "readout":
@@ -666,7 +666,7 @@ def run_custom_noise_simulations(secret: str, ideal_counts: dict[str, int]) -> l
             if cached_counts is not None:
                 counts = cached_counts
             else:
-                logger.debug("Simulating noise=%s level=%s for secret %s", noise_kind, level, secret)
+                logger.info("Simulating noise=%s level=%s for secret %s", noise_kind, level, secret)
                 noise_model = build_custom_noise_model(noise_kind, level)
                 backend = AerSimulator(noise_model=noise_model, seed_simulator=DEFAULT_SEED)
                 pass_manager = generate_preset_pass_manager(
@@ -905,7 +905,7 @@ def parse_noise_info(category: str, backend: str) -> tuple[str | None, str | Non
 
 if __name__ == "__main__":
     logging.basicConfig(
-        level=os.getenv("BV_LOG_LEVEL", "DEBUG").upper(),
+        level=os.getenv("BV_LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(name)s - %(message)s",
     )
     service = build_runtime_service()
