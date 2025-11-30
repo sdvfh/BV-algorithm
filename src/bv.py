@@ -636,19 +636,19 @@ def plot_backend_comparison(
 
     if emulated_counts:
         counts_list.append({int(bitstring, 2): value for bitstring, value in emulated_counts.items()})
-        legends.append(backend_name)
+        legends.append(f"{backend_name} (emulado)")
         colors.append(EMULATED_COLOR)
 
     if real_counts:
         counts_list.append({int(bitstring, 2): value for bitstring, value in real_counts.items()})
-        legends.append(f"real-{backend_name}")
+        legends.append(f"{backend_name} (real)")
         colors.append(REAL_OVERLAY_COLOR)
 
     if not counts_list:
         return
 
     save_path = RESULTS_ROOT / "backend_comparison" / f"{secret}_{backend_name}.png"
-    render_horizontal_histogram(counts_list, legends, colors, "Emulação", save_path)
+    render_horizontal_histogram(counts_list, legends, colors, "Modo", save_path)
 
 
 def run_custom_noise_simulations(secret: str, ideal_counts: dict[str, int]) -> list[RunRecord]:
@@ -693,7 +693,7 @@ def run_suite(
     secrets: Iterable[str],
     backends_list: list,
 ) -> list[RunRecord]:
-    """Run simulations first (ideal, emulated, noise sweeps) then real executions."""
+    """Run simulations first (ideal, emulated, noise sweeps) then real executions (torino before fez)."""
     secrets_list = list(secrets)
     logger.info("Starting full suite for %d secrets across %d backends", len(secrets_list), len(backends_list))
     records: list[RunRecord] = []
@@ -732,25 +732,40 @@ def run_suite(
         ideal_counts = ideal_counts_map.get(secret, {})
         records.extend(run_custom_noise_simulations(secret, ideal_counts))
 
-    # Real executions only after all simulations and plots are complete.
-    for secret in secrets_list:
-        ideal_counts = ideal_counts_map.get(secret, {})
-        for backend in backends_list:
-            real_record = None
-            try:
-                real_record = run_real_execution(secret, backend)
-            except Exception:
-                logger.exception("Real execution failed on %s for secret %s", backend.name, secret)
-            if real_record:
-                records.append(real_record)
-                emulated_counts = emulated_counts_map.get((secret, backend.name), {})
-                plot_backend_comparison(
-                    secret,
-                    backend.name,
-                    ideal_counts=ideal_counts,
-                    emulated_counts=emulated_counts,
-                    real_counts=real_record.counts,
-                )
+    # Run real executions prioritizing torino (or any non-deferred backend) before fez.
+    deferred_real_names = {"ibm_fez"}
+    prioritized_backends = [backend for backend in backends_list if backend.name not in deferred_real_names]
+    deferred_backends = [backend for backend in backends_list if backend.name in deferred_real_names]
+
+    def execute_real_phase(selected_backends: list) -> None:
+        for secret in secrets_list:
+            ideal_counts = ideal_counts_map.get(secret, {})
+            for backend in selected_backends:
+                real_record = None
+                try:
+                    real_record = run_real_execution(secret, backend)
+                except Exception:
+                    logger.exception("Real execution failed on %s for secret %s", backend.name, secret)
+                if real_record:
+                    records.append(real_record)
+                    emulated_counts = emulated_counts_map.get((secret, backend.name), {})
+                    plot_backend_comparison(
+                        secret,
+                        backend.name,
+                        ideal_counts=ideal_counts,
+                        emulated_counts=emulated_counts,
+                        real_counts=real_record.counts,
+                    )
+
+    # Torino (and other non-deferred backends) first.
+    if prioritized_backends:
+        logger.info("Running real executions for prioritized backends: %s", [b.name for b in prioritized_backends])
+        execute_real_phase(prioritized_backends)
+
+    # Fez only after every other step (simulations, emulations, real torino, histograms).
+    if deferred_backends:
+        logger.info("Running deferred real executions: %s", [b.name for b in deferred_backends])
+        execute_real_phase(deferred_backends)
 
     return records
 
