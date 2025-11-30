@@ -9,8 +9,8 @@ Bernstein-Vazirani experiments executed across ideal simulation, backend-noise e
 
 ## Experiment flow
 - Ideal simulation: Aer simulator without noise for each secret.
-- Backend-noise emulation: Aer simulator with noise models derived from each available IBM backend (excluding `ibm_marrakesh`).
-- Real hardware (optional): runtime Sampler execution on each available backend; failures are logged and skipped.
+- Backend-noise emulation: Aer simulator with noise models derived from `ibm_torino` and `ibm_fez` when available.
+- Real hardware (optional): runtime Sampler execution on `ibm_torino` and `ibm_fez`; missing backends are reported and skipped.
 - Readout sweeps: injected symmetric readout errors across predefined levels (`ultra-low` to `very-high`) with ideal overlays.
 - Custom noise sweeps: depolarizing, amplitude/phase damping, thermal relaxation, and gate-specific noise across the same intensity levels.
 - Plots: horizontal histograms comparing ideal, emulated, noisy, and real results; readout and custom sweeps are saved per secret and noise kind.
@@ -26,13 +26,13 @@ Bernstein-Vazirani experiments executed across ideal simulation, backend-noise e
   - IBM Quantum API token used by `QiskitRuntimeService` for authentication.
 - `QISKIT_IBM_INSTANCE`  
   - IBM Cloud instance CRN to scope backend access.
-- `QISKIT_IBM_CHANNEL`
+- `QISKIT_IBM_CHANNEL` or `IBM_QUANTUM_SERVICE`  
   - Service channel passed to `QiskitRuntimeService`; if omitted, default channel resolution is used.
 
 ## Running
 - Execute the Bernstein-Vazirani suite:  
   - `python src/bv.py`
-- The script auto-discovers available IBM backends (excluding `ibm_marrakesh`) and attempts real execution when credentials permit.
+- The script targets `ibm_torino` and `ibm_fez` for backend-noise emulation and real execution; other backends are ignored.
 
 ## Outputs
 - Predictions: `Plot_results/bv_predictions.csv` with per-run category, backend, expected secret, predicted bitstring, correctness flag, top outcome probability, and raw counts.

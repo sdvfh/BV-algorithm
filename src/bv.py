@@ -33,7 +33,7 @@ from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2 as Sampler
 
 DEFAULT_SHOTS = 1024
 DEFAULT_SEED = 42
-EXCLUDED_BACKENDS = {"ibm_marrakesh"}
+TARGET_BACKENDS = ("ibm_torino", "ibm_fez")
 RESULTS_ROOT = Path("Plot_results")
 HISTOGRAM_DATA_ROOT = RESULTS_ROOT / "hist_data"
 READOUT_NOISE_LEVELS = {
@@ -173,15 +173,19 @@ def bernstein_vazirani_circuit(secret: str) -> QuantumCircuit:
 def build_runtime_service() -> QiskitRuntimeService:
     """Instantiate the IBM Runtime service, honoring an optional channel env var."""
     load_dotenv()
-    channel = os.getenv("QISKIT_IBM_CHANNEL")
+    channel = os.getenv("IBM_QUANTUM_SERVICE") or os.getenv("QISKIT_IBM_CHANNEL")
     if channel:
         return QiskitRuntimeService(channel=channel)
     return QiskitRuntimeService()
 
 
 def available_backends(service: QiskitRuntimeService):
-    """Return all backends except those explicitly excluded."""
-    return [backend for backend in service.backends() if backend.name not in EXCLUDED_BACKENDS]
+    """Return target backends (ibm_torino and ibm_fez) when available."""
+    backend_map = {backend.name: backend for backend in service.backends()}
+    missing = [name for name in TARGET_BACKENDS if name not in backend_map]
+    if missing:
+        print(f"Backends not available and will be skipped: {', '.join(missing)}")
+    return [backend_map[name] for name in TARGET_BACKENDS if name in backend_map]
 
 
 def build_plot_path(category: str, secret: str, backend_name: str | None = None) -> Path:
