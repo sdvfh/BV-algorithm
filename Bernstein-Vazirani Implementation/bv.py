@@ -683,10 +683,10 @@ def run_suite(
         for backend in backends_list:
             noisy_record = run_noisy_simulation(secret, backend)
             real_record = None
-            # try:
-            #     real_record = run_real_execution(secret, backend)
-            # except Exception as err:
-            #     print(f"Real execution failed on {backend.name} for secret {secret}: {err}")
+            try:
+                real_record = run_real_execution(secret, backend)
+            except Exception as err:
+                print(f"Real execution failed on {backend.name} for secret {secret}: {err}")
             if noisy_record:
                 records.append(noisy_record)
             if real_record:
