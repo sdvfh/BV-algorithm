@@ -58,6 +58,7 @@ READOUT_IDEAL_COLOR = "#f1c40f"  # bright gold to stand apart from error scale
 IDEAL_OVERLAY_COLOR = READOUT_IDEAL_COLOR
 EMULATED_COLOR = "#1f77b4"
 REAL_OVERLAY_COLOR = "#c43c39"
+BITSTRING_WIDTH = 5
 READOUT_LEVEL_TRANSLATIONS = {
     "ultra-low": "muito baixo",
     "low": "baixo",
@@ -214,12 +215,28 @@ def histogram_json_path(category: str, secret: str, backend_name: str | None = N
     return HISTOGRAM_DATA_ROOT / category / filename
 
 
+def normalize_bitstring_counts(counts: dict[str | int, int], width: int = BITSTRING_WIDTH) -> dict[str, int]:
+    """Pad bitstring keys to a fixed width, merging duplicates after padding."""
+    if not isinstance(counts, dict):
+        return {}
+    normalized: dict[str, int] = {}
+    for key, value in counts.items():
+        try:
+            bitstring = key if isinstance(key, str) else format(int(key), "b")
+            padded = bitstring.zfill(width)
+            normalized[padded] = normalized.get(padded, 0) + int(value)
+        except Exception:
+            continue
+    return normalized
+
+
 def save_histogram_data(path: Path, counts: dict[str, int]) -> None:
     """Persist histogram counts to JSON."""
     logger.info("Saving histogram data to %s", path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    normalized_counts = normalize_bitstring_counts(counts)
     with path.open("w", encoding="utf-8") as f:
-        json.dump(counts, f, indent=2)
+        json.dump(normalized_counts, f, indent=2)
 
 
 def load_histogram_data(path: Path) -> dict[str, int] | None:
@@ -230,8 +247,12 @@ def load_histogram_data(path: Path) -> dict[str, int] | None:
     try:
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
+            if not isinstance(data, dict):
+                logger.warning("Histogram data at %s is not a dictionary; ignoring cache", path)
+                return None
+            normalized = normalize_bitstring_counts(data)
             logger.info("Loaded histogram cache from %s", path)
-            return data
+            return normalized
     except Exception as err:
         logger.warning("Failed to read histogram data from %s: %s", path, err)
         return None
@@ -239,8 +260,9 @@ def load_histogram_data(path: Path) -> dict[str, int] | None:
 
 def plot_and_save(counts, title: str, output_path: Path) -> None:
     """Plot histogram counts with a standard title and save to disk."""
+    normalized_counts = normalize_bitstring_counts(counts)
     plt.clf()
-    plot_histogram(counts)
+    plot_histogram(normalized_counts)
     plt.xlabel("Contagens")
     plt.ylabel("Bitstring")
     plt.tight_layout()
@@ -289,7 +311,7 @@ def run_ideal_simulation(secret: str) -> RunRecord | None:
     )
 
     result = backend.run(compiled, shots=DEFAULT_SHOTS, seed_simulator=DEFAULT_SEED).result()
-    counts = result.get_counts()
+    counts = normalize_bitstring_counts(result.get_counts())
     save_histogram_data(json_path, counts)
     return record_from_counts("ideal", "aer_simulator_ideal", secret, counts)
 
@@ -317,7 +339,7 @@ def run_noisy_simulation(secret: str, backend) -> RunRecord | None:
     compiled = pass_manager.run(circuit)
 
     result = noisy_backend.run(compiled, shots=DEFAULT_SHOTS, seed_simulator=DEFAULT_SEED).result()
-    counts = result.get_counts()
+    counts = normalize_bitstring_counts(result.get_counts())
 
     save_histogram_data(json_path, counts)
     return record_from_counts("noisy", backend.name, secret, counts)
@@ -347,7 +369,7 @@ def run_real_execution(secret: str, backend) -> RunRecord | None:
     result = job.result()
 
     bitarray = result[0].data.c
-    counts = bitarray.get_counts()
+    counts = normalize_bitstring_counts(bitarray.get_counts())
 
     save_histogram_data(json_path, counts)
     return record_from_counts("real", backend.name, secret, counts)
@@ -377,7 +399,7 @@ def run_readout_noise_simulations(secret: str) -> list[RunRecord]:
         )
         ideal_compiled = ideal_pm.run(circuit)
         ideal_result = ideal_backend.run(ideal_compiled, shots=DEFAULT_SHOTS, seed_simulator=DEFAULT_SEED).result()
-        ideal_counts = ideal_result.get_counts()
+        ideal_counts = normalize_bitstring_counts(ideal_result.get_counts())
         save_histogram_data(ideal_json, ideal_counts)
 
     for level, probability in READOUT_NOISE_LEVELS.items():
@@ -399,7 +421,7 @@ def run_readout_noise_simulations(secret: str) -> list[RunRecord]:
             compiled = pass_manager.run(circuit)
 
             result = backend.run(compiled, shots=DEFAULT_SHOTS, seed_simulator=DEFAULT_SEED).result()
-            counts = result.get_counts()
+            counts = normalize_bitstring_counts(result.get_counts())
             save_histogram_data(json_path, counts)
         counts_by_level[level] = counts
         records.append(record_from_counts("custom_noise_readout", f"readout_{level}", secret, counts))
@@ -541,7 +563,7 @@ def render_horizontal_histogram(
     if not counts_list:
         return
     all_keys = sorted({key for counts in counts_list for key in counts})
-    bit_width = max(1, max(all_keys).bit_length()) if all_keys else 1
+    bit_width = max(BITSTRING_WIDTH, max(all_keys).bit_length()) if all_keys else BITSTRING_WIDTH
     num_series = len(counts_list)
     height = 0.8 / max(num_series, 1)
     y_positions = list(range(len(all_keys)))
@@ -679,7 +701,7 @@ def run_custom_noise_simulations(secret: str, ideal_counts: dict[str, int]) -> l
                 compiled = pass_manager.run(circuit)
 
                 result = backend.run(compiled, shots=DEFAULT_SHOTS, seed_simulator=DEFAULT_SEED).result()
-                counts = result.get_counts()
+                counts = normalize_bitstring_counts(result.get_counts())
                 save_histogram_data(json_path, counts)
             counts_by_level[level] = counts
             records.append(record_from_counts(f"custom_noise_{noise_kind}", f"{noise_kind}_{level}", secret, counts))
