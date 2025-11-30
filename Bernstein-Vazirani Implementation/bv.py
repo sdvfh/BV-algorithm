@@ -1,7 +1,7 @@
 """Bernstein-Vazirani experiment runner with metrics and plotting.
 
 Original behavior (plot generation with skip-if-exists) is preserved. Added:
-- capture of predicted secrets for each run (ideal, noisy, real)
+- capture of predicted secrets for each run (ideal, noisy, readout-injected, real)
 - computation of accuracy, precision, recall, and F1-score vs. expected secrets
 - CSV summaries for per-run predictions and aggregated metrics
 """
@@ -21,38 +21,55 @@ from qiskit.transpiler import generate_preset_pass_manager
 from qiskit.visualization import plot_histogram
 from qiskit_aer import AerSimulator
 from qiskit_aer.noise import NoiseModel
+from qiskit_aer.noise.errors import ReadoutError
 from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2 as Sampler
 
 DEFAULT_SHOTS = 1024
 DEFAULT_SEED = 42
 EXCLUDED_BACKENDS = {"ibm_marrakesh"}
 RESULTS_ROOT = Path("Plot_results")
+READOUT_NOISE_LEVELS = {
+    # Real backends (fez ≈1.0e-2, torino ≈3.0e-2) should sit inside "low".
+    # Higher levels explore stress scenarios beyond current hardware error rates.
+    "ultra-low": 1e-3,
+    "low": 2e-2,
+    "medium": 5e-2,
+    "high": 1e-1,
+    "very-high": 2e-1,
+}
+READOUT_COLORS = {
+    "ultra-low": "#2ca02c",
+    "low": "#1f77b4",
+    "medium": "#ff7f0e",
+    "high": "#d62728",
+    "very-high": "#9467bd",
+}
 SECRET_STRINGS = [
     "10000",
-    "01000",
-    "00100",
-    "00010",
-    "00001",
-    "00011",
-    "00111",
-    "01111",
-    "11111",
-    "11000",
-    "11100",
-    "10100",
-    "10001",
-    "10101",
-    "01010",
-    "01100",
-    "11011",
-    "10111",
-    "01101",
-    "10011",
-    "01001",
-    "00101",
-    "01110",
-    "11010",
-    "10110",
+    # "01000",
+    # "00100",
+    # "00010",
+    # "00001",
+    # "00011",
+    # "00111",
+    # "01111",
+    # "11111",
+    # "11000",
+    # "11100",
+    # "10100",
+    # "10001",
+    # "10101",
+    # "01010",
+    # "01100",
+    # "11011",
+    # "10111",
+    # "01101",
+    # "10011",
+    # "01001",
+    # "00101",
+    # "01110",
+    # "11010",
+    # "10110",
 ]
 PREDICTIONS_CSV = RESULTS_ROOT / "bv_predictions.csv"
 METRICS_CSV = RESULTS_ROOT / "bv_metrics.csv"
@@ -248,6 +265,103 @@ def run_real_execution(secret: str, backend) -> RunRecord | None:
     return record_from_counts("real", backend.name, secret, counts)
 
 
+def run_readout_noise_simulations(secret: str) -> list[RunRecord]:
+    """Execute the circuit on an ideal simulator with injected readout error levels."""
+    circuit = bernstein_vazirani_circuit(secret)
+    records: list[RunRecord] = []
+    counts_by_level: dict[str, dict[str, int]] = {}
+
+    for level, probability in READOUT_NOISE_LEVELS.items():
+        noise_model = build_readout_noise_model(probability)
+        backend = AerSimulator(noise_model=noise_model, seed_simulator=DEFAULT_SEED)
+        pass_manager = generate_preset_pass_manager(
+            optimization_level=3,
+            backend=backend,
+            layout_method="sabre",
+            routing_method="sabre",
+            seed_transpiler=DEFAULT_SEED,
+        )
+        compiled = pass_manager.run(circuit)
+
+        result = backend.run(compiled, shots=DEFAULT_SHOTS, seed_simulator=DEFAULT_SEED).result()
+        counts = result.get_counts()
+        counts_by_level[level] = counts
+        records.append(record_from_counts("readout_noise", f"aer_readout_{level}", secret, counts))
+
+    plot_readout_sweep(secret, counts_by_level)
+    return records
+
+
+def build_readout_noise_model(probability: float) -> NoiseModel:
+    """Construct a noise model with symmetric readout error on all measured qubits."""
+    matrix = [[1 - probability, probability], [probability, 1 - probability]]
+    readout_error = ReadoutError(matrix)
+    noise_model = NoiseModel()
+    noise_model.add_all_qubit_readout_error(readout_error)
+    return noise_model
+
+
+def render_horizontal_histogram(
+    counts_list: list[dict[int, int]],
+    legends: list[str],
+    colors: list[str] | None,
+    title: str,
+    save_path: Path,
+) -> None:
+    """Render a combined histogram similar to src/main.py (horizontal stacked bars)."""
+    if not counts_list:
+        return
+    all_keys = sorted({key for counts in counts_list for key in counts})
+    bit_width = max(1, max(all_keys).bit_length()) if all_keys else 1
+    num_series = len(counts_list)
+    height = 0.8 / max(num_series, 1)
+    y_positions = list(range(len(all_keys)))
+
+    height_dynamic = max(6.0, min(24.0, len(all_keys) * 0.35))
+    fig, ax = plt.subplots(figsize=(8, height_dynamic), dpi=150)
+    for idx, counts in enumerate(counts_list):
+        values = [counts.get(key, 0) for key in all_keys]
+        offsets = [y + (idx - (num_series - 1) / 2) * height for y in y_positions]
+        kwargs = {}
+        if colors and idx < len(colors):
+            kwargs["color"] = colors[idx]
+        ax.barh(offsets, values, height=height, label=legends[idx] if legends else None, **kwargs, zorder=2)
+
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels([format(key, f"0{bit_width}b") for key in all_keys])
+    ax.set_xlabel("Counts")
+    ax.set_ylabel("Bitstring")
+    if legends and len(legends) > 1:
+        ax.legend(title="Intensity")
+    ax.set_title(title)
+    ax.grid(axis="x", linestyle="--", linewidth=0.8, color="#999999", alpha=0.6, zorder=0)
+    ax.set_axisbelow(True)
+    fig.tight_layout()
+    ax.invert_yaxis()
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(save_path, format="png", dpi=200)
+    plt.close(fig)
+
+
+def plot_readout_sweep(secret: str, counts_by_level: dict[str, dict[str, int]]) -> None:
+    """Create a single figure concatenating histograms for all readout error levels."""
+    ordered_levels = list(READOUT_NOISE_LEVELS.keys())
+    counts_list: list[dict[int, int]] = []
+    legends: list[str] = []
+    colors: list[str] = []
+    for level in ordered_levels:
+        if level in counts_by_level:
+            numeric_counts = {int(bitstring, 2): value for bitstring, value in counts_by_level[level].items()}
+            counts_list.append(numeric_counts)
+            legends.append(level)
+            colors.append(READOUT_COLORS.get(level, "#333333"))
+    if not counts_list:
+        return
+    title = f"Readout error sweep - secret {secret}"
+    save_path = RESULTS_ROOT / "readout_noise" / f"{secret}_readout_sweep.png"
+    render_horizontal_histogram(counts_list, legends, colors, title, save_path)
+
+
 def run_suite(
     secrets: Iterable[str],
     backends_list: list,
@@ -264,6 +378,9 @@ def run_suite(
             record = run_noisy_simulation(secret, backend)
             if record:
                 records.append(record)
+
+    for secret in secrets:
+        records.extend(run_readout_noise_simulations(secret))
 
     # for secret in secrets:
     #     for backend in backends_list:
