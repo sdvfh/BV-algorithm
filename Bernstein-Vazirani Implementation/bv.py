@@ -58,19 +58,18 @@ IDEAL_OVERLAY_COLOR = READOUT_IDEAL_COLOR
 EMULATED_COLOR = "#1f77b4"
 REAL_OVERLAY_COLOR = "#c43c39"
 LEVEL_MULTIPLIERS = {
-    "ultra-low": 1.0,
-    "low": 5.0,
+    "ultra-low": 0.5,
+    "low": 2.0,
     "medium": 10.0,
-    "high": 50.0,
-    "very-high": 100.0,
+    "high": 100.0,
+    "very-high": 1000.0,
 }
 # Baselines anchored on real hardware (fez/torino) so "low" matches typical errors.
 BASE_READOUT_P = 0.02  # ~torino median
-BASE_CZ_P = 0.003  # ~cz/2q error median fez/torino
 BASE_CX_P = 0.003
 BASE_SX_P = 0.00035  # ~3.2e-4 sx median
 BASE_DEP1_P = BASE_SX_P
-BASE_DEP2_P = BASE_CZ_P
+BASE_DEP2_P = BASE_CX_P
 BASE_T1 = 150e-6  # seconds (between fez 143us and torino 176us)
 BASE_T2 = 115e-6  # seconds (between fez 99us and torino 135us)
 GATE_TIME_SX = 35e-9  # representative single-qubit gate time
@@ -80,7 +79,6 @@ CUSTOM_NOISE_KINDS = [
     "depolarizing",
     "amplitude_damping",
     "phase_damping",
-    "cz_gate",
     "cx_gate",
     "sx_gate",
 ]
@@ -430,11 +428,6 @@ def build_custom_noise_model(noise_kind: str, level: str) -> NoiseModel:
         )
         add_1q_error(noise_model, err_1q)
         add_2q_error(noise_model, err_2q)
-        return noise_model
-
-    if noise_kind == "cz_gate":
-        err_2q = depolarizing_error(min(BASE_CZ_P * mult, 1.0), 2)
-        add_2q_error(noise_model, err_2q, gates=["cz"])
         return noise_model
 
     if noise_kind == "cx_gate":
