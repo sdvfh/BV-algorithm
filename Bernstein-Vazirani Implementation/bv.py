@@ -22,7 +22,13 @@ from qiskit.transpiler import generate_preset_pass_manager
 from qiskit.visualization import plot_histogram
 from qiskit_aer import AerSimulator
 from qiskit_aer.noise import NoiseModel
-from qiskit_aer.noise.errors import ReadoutError
+from qiskit_aer.noise.errors import (
+    ReadoutError,
+    amplitude_damping_error,
+    depolarizing_error,
+    phase_damping_error,
+    thermal_relaxation_error,
+)
 from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2 as Sampler
 
 DEFAULT_SHOTS = 1024
@@ -51,6 +57,33 @@ READOUT_IDEAL_COLOR = "#f1c40f"  # bright gold to stand apart from error scale
 IDEAL_OVERLAY_COLOR = READOUT_IDEAL_COLOR
 EMULATED_COLOR = "#1f77b4"
 REAL_OVERLAY_COLOR = "#c43c39"
+LEVEL_MULTIPLIERS = {
+    "ultra-low": 0.5,
+    "low": 1.0,
+    "medium": 2.0,
+    "high": 4.0,
+    "very-high": 8.0,
+}
+# Baselines anchored on real hardware (fez/torino) so "low" matches typical errors.
+BASE_READOUT_P = 0.02  # ~torino median
+BASE_CZ_P = 0.003  # ~cz/2q error median fez/torino
+BASE_CX_P = 0.003
+BASE_SX_P = 0.00035  # ~3.2e-4 sx median
+BASE_DEP1_P = BASE_SX_P
+BASE_DEP2_P = BASE_CZ_P
+BASE_T1 = 150e-6  # seconds (between fez 143us and torino 176us)
+BASE_T2 = 115e-6  # seconds (between fez 99us and torino 135us)
+GATE_TIME_SX = 35e-9  # representative single-qubit gate time
+GATE_TIME_CX = 250e-9  # representative two-qubit gate time
+CUSTOM_NOISE_KINDS = [
+    "thermal_relaxation",
+    "depolarizing",
+    "amplitude_damping",
+    "phase_damping",
+    "cz_gate",
+    "cx_gate",
+    "sx_gate",
+]
 SECRET_STRINGS = [
     "10000",
     # "01000",
@@ -354,6 +387,87 @@ def build_readout_noise_model(probability: float) -> NoiseModel:
     return noise_model
 
 
+def build_custom_noise_model(noise_kind: str, level: str) -> NoiseModel:
+    """Construct custom noise models anchored to real backend error rates."""
+    if level not in LEVEL_MULTIPLIERS:
+        raise ValueError(f"Unknown noise level {level}")
+    mult = LEVEL_MULTIPLIERS[level]
+    noise_model = NoiseModel()
+
+    if noise_kind == "readout":
+        p = BASE_READOUT_P * mult
+        return build_readout_noise_model(p)
+
+    if noise_kind == "thermal_relaxation":
+        t1 = max(BASE_T1 / mult, 1e-6)
+        t2 = max(BASE_T2 / mult, 1e-6)
+        err_1q = thermal_relaxation_error(t1, t2, GATE_TIME_SX)
+        err_2q = thermal_relaxation_error(t1, t2, GATE_TIME_CX)
+        add_1q_error(noise_model, err_1q)
+        add_2q_error(noise_model, err_2q)
+        return noise_model
+
+    if noise_kind == "depolarizing":
+        err_1q = depolarizing_error(min(BASE_DEP1_P * mult, 1.0), 1)
+        err_2q = depolarizing_error(min(BASE_DEP2_P * mult, 1.0), 2)
+        add_1q_error(noise_model, err_1q)
+        add_2q_error(noise_model, err_2q)
+        return noise_model
+
+    if noise_kind == "amplitude_damping":
+        err_1q = amplitude_damping_error(min(BASE_DEP1_P * mult, 1.0))
+        err_2q = amplitude_damping_error(min(BASE_DEP2_P * mult, 1.0)).tensor(
+            amplitude_damping_error(min(BASE_DEP2_P * mult, 1.0))
+        )
+        add_1q_error(noise_model, err_1q)
+        add_2q_error(noise_model, err_2q)
+        return noise_model
+
+    if noise_kind == "phase_damping":
+        err_1q = phase_damping_error(min(BASE_DEP1_P * mult, 1.0))
+        err_2q = phase_damping_error(min(BASE_DEP2_P * mult, 1.0)).tensor(
+            phase_damping_error(min(BASE_DEP2_P * mult, 1.0))
+        )
+        add_1q_error(noise_model, err_1q)
+        add_2q_error(noise_model, err_2q)
+        return noise_model
+
+    if noise_kind == "cz_gate":
+        err_2q = depolarizing_error(min(BASE_CZ_P * mult, 1.0), 2)
+        add_2q_error(noise_model, err_2q, gates=["cz"])
+        return noise_model
+
+    if noise_kind == "cx_gate":
+        err_2q = depolarizing_error(min(BASE_CX_P * mult, 1.0), 2)
+        add_2q_error(noise_model, err_2q, gates=["cx"])
+        return noise_model
+
+    if noise_kind == "sx_gate":
+        err_1q = depolarizing_error(min(BASE_SX_P * mult, 1.0), 1)
+        add_1q_error(noise_model, err_1q, gates=["sx"])
+        return noise_model
+
+    raise ValueError(f"Unknown noise kind {noise_kind}")
+
+
+def add_1q_error(noise_model: NoiseModel, error, gates: list[str] | None = None) -> None:
+    gates = gates or ["id", "x", "sx", "rz", "rx", "h"]
+    for gate in gates:
+        try:
+            noise_model.add_all_qubit_quantum_error(error, gate)
+        except Exception:
+            continue
+
+
+def add_2q_error(noise_model: NoiseModel, error, gates: list[str] | None = None) -> None:
+    gates = gates or ["cx", "cz", "rzz"]
+    for gate in gates:
+        try:
+            noise_model.add_all_qubit_quantum_error(error, gate)
+        except Exception:
+            continue
+
+
 def render_horizontal_histogram(
     counts_list: list[dict[int, int]],
     legends: list[str],
@@ -419,6 +533,31 @@ def plot_readout_sweep(secret: str, counts_by_level: dict[str, dict[str, int]], 
     render_horizontal_histogram(counts_list, legends, colors, title, save_path)
 
 
+def plot_custom_noise_sweep(
+    secret: str, noise_kind: str, counts_by_level: dict[str, dict[str, int]], ideal_counts: dict[str, int]
+) -> None:
+    """Create histogram combining ideal and multiple noise levels for a custom noise kind."""
+    ordered_levels = list(READOUT_NOISE_LEVELS.keys())
+    counts_list: list[dict[int, int]] = []
+    legends: list[str] = []
+    colors: list[str] = []
+    if ideal_counts:
+        counts_list.append({int(bitstring, 2): value for bitstring, value in ideal_counts.items()})
+        legends.append("ideal")
+        colors.append(READOUT_IDEAL_COLOR)
+    for level in ordered_levels:
+        if level in counts_by_level:
+            numeric_counts = {int(bitstring, 2): value for bitstring, value in counts_by_level[level].items()}
+            counts_list.append(numeric_counts)
+            legends.append(level)
+            colors.append(READOUT_COLORS.get(level, "#333333"))
+    if not counts_list:
+        return
+    title = f"{noise_kind} sweep - secret {secret}"
+    save_path = RESULTS_ROOT / "custom_noise" / noise_kind / f"{secret}_{noise_kind}_sweep.png"
+    render_horizontal_histogram(counts_list, legends, colors, title, save_path)
+
+
 def plot_backend_comparison(
     secret: str,
     backend_name: str,
@@ -452,6 +591,42 @@ def plot_backend_comparison(
     title = f"{backend_name} emulation vs ideal" if not real_counts else f"{backend_name} emulation vs ideal vs real"
     save_path = RESULTS_ROOT / "backend_comparison" / f"{secret}_{backend_name}.png"
     render_horizontal_histogram(counts_list, legends, colors, title, save_path)
+
+
+def run_custom_noise_simulations(secret: str, ideal_counts: dict[str, int]) -> list[RunRecord]:
+    """Execute the circuit with multiple custom noise kinds and levels."""
+    circuit = bernstein_vazirani_circuit(secret)
+    records: list[RunRecord] = []
+    ordered_levels = list(READOUT_NOISE_LEVELS.keys())
+
+    for noise_kind in CUSTOM_NOISE_KINDS:
+        counts_by_level: dict[str, dict[str, int]] = {}
+        for level in ordered_levels:
+            json_path = histogram_json_path("custom_noise", secret, tag=f"{noise_kind}_{level}")
+            cached_counts = load_histogram_data(json_path)
+            if cached_counts is not None:
+                counts = cached_counts
+            else:
+                noise_model = build_custom_noise_model(noise_kind, level)
+                backend = AerSimulator(noise_model=noise_model, seed_simulator=DEFAULT_SEED)
+                pass_manager = generate_preset_pass_manager(
+                    optimization_level=3,
+                    backend=backend,
+                    layout_method="sabre",
+                    routing_method="sabre",
+                    seed_transpiler=DEFAULT_SEED,
+                )
+                compiled = pass_manager.run(circuit)
+
+                result = backend.run(compiled, shots=DEFAULT_SHOTS, seed_simulator=DEFAULT_SEED).result()
+                counts = result.get_counts()
+                save_histogram_data(json_path, counts)
+            counts_by_level[level] = counts
+            records.append(record_from_counts(f"custom_noise_{noise_kind}", f"{noise_kind}_{level}", secret, counts))
+
+        plot_custom_noise_sweep(secret, noise_kind, counts_by_level, ideal_counts)
+
+    return records
 
 
 def run_suite(
@@ -495,6 +670,11 @@ def run_suite(
     # Readout noise sweeps with ideal overlay.
     for secret in secrets:
         records.extend(run_readout_noise_simulations(secret))
+
+    # Custom noise sweeps (depolarizing, amplitude/phase damping, thermal, gate-specific).
+    for secret in secrets:
+        ideal_counts = ideal_counts_map.get(secret, {})
+        records.extend(run_custom_noise_simulations(secret, ideal_counts))
 
     return records
 
