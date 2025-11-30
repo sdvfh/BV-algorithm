@@ -12,8 +12,6 @@ from collections.abc import Iterable
 import os
 from pathlib import Path
 
-os.environ["MPLBACKEND"] = "macosx"
-
 from dotenv import load_dotenv
 import matplotlib.pyplot as plt
 from qiskit import QuantumCircuit, transpile
@@ -26,7 +24,7 @@ from qiskit_ibm_runtime import QiskitRuntimeService, SamplerV2 as Sampler
 DEFAULT_SHOTS = 1024
 DEFAULT_SEED = 42
 EXCLUDED_BACKENDS = {"ibm_marrakesh"}
-RESULTS_ROOT = Path("../src/Plot_results")
+RESULTS_ROOT = Path("Plot_results")
 SECRET_STRINGS = [
     "10000",
     "01000",
@@ -39,6 +37,20 @@ SECRET_STRINGS = [
     "11111",
     "11000",
     "11100",
+    "10100",
+    "10001",
+    "10101",
+    "01010",
+    "01100",
+    "11011",
+    "10111",
+    "01101",
+    "10011",
+    "01001",
+    "00101",
+    "01110",
+    "11010",
+    "10110",
 ]
 
 
@@ -58,16 +70,12 @@ def bernstein_vazirani_circuit(secret: str) -> QuantumCircuit:
 
     circuit.x(num_qubits)
     circuit.h(num_qubits)
-    circuit.barrier()
 
     circuit.h(range(num_qubits))
-    circuit.barrier()
 
     circuit.compose(bernstein_vazirani_oracle(secret), inplace=True)
-    circuit.barrier()
 
     circuit.h(range(num_qubits))
-    circuit.barrier()
 
     circuit.measure(range(num_qubits), range(num_qubits))
     return circuit
@@ -121,9 +129,16 @@ def run_ideal_simulation(secret: str) -> None:
 
     circuit = bernstein_vazirani_circuit(secret)
     backend = AerSimulator(seed_simulator=DEFAULT_SEED)
-    compiled = transpile(circuit, backend, seed_transpiler=DEFAULT_SEED)
+    compiled = transpile(
+        circuit,
+        backend,
+        optimization_level=3,
+        seed_transpiler=DEFAULT_SEED,
+        layout_method="sabre",
+        routing_method="sabre",
+    )
 
-    result = backend.run(compiled, shots=DEFAULT_SHOTS).result()
+    result = backend.run(compiled, shots=DEFAULT_SHOTS, seed_simulator=DEFAULT_SEED).result()
     counts = result.get_counts()
 
     plot_and_save(counts, "Histogram (Ideal Simulation)", output_path)
@@ -148,7 +163,7 @@ def run_noisy_simulation(secret: str, backend) -> None:
     )
     compiled = pass_manager.run(circuit)
 
-    result = noisy_backend.run(compiled, shots=DEFAULT_SHOTS).result()
+    result = noisy_backend.run(compiled, shots=DEFAULT_SHOTS, seed_simulator=DEFAULT_SEED).result()
     counts = result.get_counts()
 
     plot_and_save(counts, f"Histogram (Noisy Simulation) - {backend.name}", output_path)
@@ -164,8 +179,10 @@ def run_real_execution(secret: str, backend) -> None:
     compiled = transpile(
         circuit,
         backend,
-        optimization_level=2,
+        optimization_level=3,
         seed_transpiler=DEFAULT_SEED,
+        layout_method="sabre",
+        routing_method="sabre",
     )
 
     sampler = Sampler(mode=backend)
