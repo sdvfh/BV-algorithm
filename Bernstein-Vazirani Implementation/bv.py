@@ -45,6 +45,10 @@ READOUT_COLORS = {
     "very-high": "#9467bd",
 }
 READOUT_IDEAL_COLOR = "#f1c40f"  # bright gold to stand apart from error scale
+# Histogram palette: ideal (gold), emulated (blue), real (crimson)
+IDEAL_OVERLAY_COLOR = READOUT_IDEAL_COLOR
+EMULATED_COLOR = "#1f77b4"
+REAL_OVERLAY_COLOR = "#c43c39"
 SECRET_STRINGS = [
     "10000",
     # "01000",
@@ -191,10 +195,6 @@ def record_from_counts(category: str, backend_name: str, secret: str, counts: di
 
 def run_ideal_simulation(secret: str) -> RunRecord | None:
     """Execute the Bernstein-Vazirani circuit on an ideal simulator."""
-    output_path = build_plot_path("ideal", secret)
-    if should_skip_plot(output_path):
-        return None
-
     circuit = bernstein_vazirani_circuit(secret)
     backend = AerSimulator(seed_simulator=DEFAULT_SEED)
     compiled = transpile(
@@ -208,17 +208,11 @@ def run_ideal_simulation(secret: str) -> RunRecord | None:
 
     result = backend.run(compiled, shots=DEFAULT_SHOTS, seed_simulator=DEFAULT_SEED).result()
     counts = result.get_counts()
-
-    plot_and_save(counts, "Histogram (Ideal Simulation)", output_path)
     return record_from_counts("ideal", "aer_simulator_ideal", secret, counts)
 
 
 def run_noisy_simulation(secret: str, backend) -> RunRecord | None:
     """Execute the circuit on a noisy simulator derived from a specific backend."""
-    output_path = build_plot_path("noisy", secret, backend.name)
-    if should_skip_plot(output_path):
-        return None
-
     circuit = bernstein_vazirani_circuit(secret)
     noise_model = NoiseModel.from_backend(backend)
     noisy_backend = AerSimulator(noise_model=noise_model, seed_simulator=DEFAULT_SEED)
@@ -235,16 +229,11 @@ def run_noisy_simulation(secret: str, backend) -> RunRecord | None:
     result = noisy_backend.run(compiled, shots=DEFAULT_SHOTS, seed_simulator=DEFAULT_SEED).result()
     counts = result.get_counts()
 
-    plot_and_save(counts, f"Histogram (Noisy Simulation) - {backend.name}", output_path)
     return record_from_counts("noisy", backend.name, secret, counts)
 
 
 def run_real_execution(secret: str, backend) -> RunRecord | None:
     """Execute the circuit on a real backend using the runtime Sampler."""
-    output_path = build_plot_path("real", secret, backend.name)
-    if should_skip_plot(output_path):
-        return None
-
     circuit = bernstein_vazirani_circuit(secret)
     compiled = transpile(
         circuit,
@@ -262,7 +251,6 @@ def run_real_execution(secret: str, backend) -> RunRecord | None:
     bitarray = result[0].data.c
     counts = bitarray.get_counts()
 
-    plot_and_save(counts, f"Histogram (Real Execution) - {backend.name}", output_path)
     return record_from_counts("real", backend.name, secret, counts)
 
 
@@ -381,31 +369,82 @@ def plot_readout_sweep(secret: str, counts_by_level: dict[str, dict[str, int]], 
     render_horizontal_histogram(counts_list, legends, colors, title, save_path)
 
 
+def plot_backend_comparison(
+    secret: str,
+    backend_name: str,
+    ideal_counts: dict[str, int],
+    emulated_counts: dict[str, int],
+    real_counts: dict[str, int] | None = None,
+) -> None:
+    """Plot ideal vs emulated (and optionally real) counts for a backend."""
+    counts_list: list[dict[int, int]] = []
+    legends: list[str] = []
+    colors: list[str] = []
+
+    if ideal_counts:
+        counts_list.append({int(bitstring, 2): value for bitstring, value in ideal_counts.items()})
+        legends.append("ideal")
+        colors.append(IDEAL_OVERLAY_COLOR)
+
+    if emulated_counts:
+        counts_list.append({int(bitstring, 2): value for bitstring, value in emulated_counts.items()})
+        legends.append(f"emulated-{backend_name}")
+        colors.append(EMULATED_COLOR)
+
+    if real_counts:
+        counts_list.append({int(bitstring, 2): value for bitstring, value in real_counts.items()})
+        legends.append(f"real-{backend_name}")
+        colors.append(REAL_OVERLAY_COLOR)
+
+    if not counts_list:
+        return
+
+    title = f"{backend_name} emulation vs ideal" if not real_counts else f"{backend_name} emulation vs ideal vs real"
+    save_path = RESULTS_ROOT / "backend_comparison" / f"{secret}_{backend_name}.png"
+    render_horizontal_histogram(counts_list, legends, colors, title, save_path)
+
+
 def run_suite(
     secrets: Iterable[str],
     backends_list: list,
 ) -> list[RunRecord]:
     """Run all simulations and real executions for a sequence of secret strings."""
     records: list[RunRecord] = []
+    ideal_counts_map: dict[str, dict[str, int]] = {}
+
+    # Ideal baseline for metrics and overlays.
     for secret in secrets:
         record = run_ideal_simulation(secret)
         if record:
             records.append(record)
+            ideal_counts_map[secret] = record.counts
 
+    # Emulated backends, with overlays from ideal and optional real execution.
     for secret in secrets:
+        ideal_counts = ideal_counts_map.get(secret, {})
         for backend in backends_list:
-            record = run_noisy_simulation(secret, backend)
-            if record:
-                records.append(record)
+            noisy_record = run_noisy_simulation(secret, backend)
+            real_record = None
+            # try:
+            #     real_record = run_real_execution(secret, backend)
+            # except Exception as err:
+            #     print(f"Real execution failed on {backend.name} for secret {secret}: {err}")
+            if noisy_record:
+                records.append(noisy_record)
+            if real_record:
+                records.append(real_record)
+            if noisy_record:
+                plot_backend_comparison(
+                    secret,
+                    backend.name,
+                    ideal_counts=ideal_counts,
+                    emulated_counts=noisy_record.counts,
+                    real_counts=real_record.counts if real_record else None,
+                )
 
+    # Readout noise sweeps with ideal overlay.
     for secret in secrets:
         records.extend(run_readout_noise_simulations(secret))
-
-    # for secret in secrets:
-    #     for backend in backends_list:
-    #         record = run_real_execution(secret, backend)
-    #         if record:
-    #             records.append(record)
 
     return records
 
