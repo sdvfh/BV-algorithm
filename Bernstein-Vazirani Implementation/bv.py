@@ -190,9 +190,9 @@ def run_suite(
         for backend in backends_list:
             run_noisy_simulation(secret, backend)
 
-    # for secret in secrets:
-    #     for backend in backends_list:
-    #         run_real_execution(secret, backend)
+    for secret in secrets:
+        for backend in backends_list:
+            run_real_execution(secret, backend)
 
 
 if __name__ == "__main__":
