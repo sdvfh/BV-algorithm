@@ -58,7 +58,7 @@ IDEAL_OVERLAY_COLOR = READOUT_IDEAL_COLOR
 EMULATED_COLOR = "#1f77b4"
 REAL_OVERLAY_COLOR = "#c43c39"
 READOUT_LEVEL_TRANSLATIONS = {
-    "ultra-low": "ultrabaixo",
+    "ultra-low": "muito baixo",
     "low": "baixo",
     "medium": "medio",
     "high": "alto",
