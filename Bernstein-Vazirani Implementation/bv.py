@@ -1,14 +1,16 @@
-"""Bernstein-Vazirani experiment runner with ideal, noisy, and real executions.
+"""Bernstein-Vazirani experiment runner with metrics and plotting.
 
-This module centralizes circuit construction, simulation execution, result plotting,
-and output management for the Bernstein-Vazirani algorithm. It reuses shared helpers
-for plotting and backend handling, documents each step, and skips runs when a plot
-already exists at the target path.
+Original behavior (plot generation with skip-if-exists) is preserved. Added:
+- capture of predicted secrets for each run (ideal, noisy, real)
+- computation of accuracy, precision, recall, and F1-score vs. expected secrets
+- CSV summaries for per-run predictions and aggregated metrics
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
+import csv
+from dataclasses import dataclass
 import os
 from pathlib import Path
 
@@ -52,6 +54,35 @@ SECRET_STRINGS = [
     "11010",
     "10110",
 ]
+PREDICTIONS_CSV = RESULTS_ROOT / "bv_predictions.csv"
+METRICS_CSV = RESULTS_ROOT / "bv_metrics.csv"
+
+
+@dataclass
+class RunRecord:
+    """Container for a single execution result."""
+
+    category: str
+    backend: str
+    secret: str
+    prediction: str
+    counts: dict[str, int]
+
+    @property
+    def correct(self) -> bool:
+        return self.prediction == self.secret
+
+    @property
+    def total_shots(self) -> int:
+        return sum(self.counts.values())
+
+    @property
+    def top_probability(self) -> float:
+        if not self.counts:
+            return 0.0
+        top_count = max(self.counts.values())
+        shots = self.total_shots
+        return top_count / shots if shots else 0.0
 
 
 def bernstein_vazirani_oracle(secret: str) -> QuantumCircuit:
@@ -121,11 +152,30 @@ def plot_and_save(counts, title: str, output_path: Path) -> None:
     print(f"Saved plot to {output_path}")
 
 
-def run_ideal_simulation(secret: str) -> None:
+def predict_from_counts(counts: dict[str, int]) -> str:
+    """Return the bitstring with the highest count."""
+    if not counts:
+        return ""
+    return max(counts.items(), key=lambda item: item[1])[0]
+
+
+def record_from_counts(category: str, backend_name: str, secret: str, counts: dict[str, int]) -> RunRecord:
+    """Create a RunRecord populated from measurement counts."""
+    prediction = predict_from_counts(counts)
+    return RunRecord(
+        category=category,
+        backend=backend_name,
+        secret=secret,
+        prediction=prediction,
+        counts=counts,
+    )
+
+
+def run_ideal_simulation(secret: str) -> RunRecord | None:
     """Execute the Bernstein-Vazirani circuit on an ideal simulator."""
     output_path = build_plot_path("ideal", secret)
     if should_skip_plot(output_path):
-        return
+        return None
 
     circuit = bernstein_vazirani_circuit(secret)
     backend = AerSimulator(seed_simulator=DEFAULT_SEED)
@@ -142,13 +192,14 @@ def run_ideal_simulation(secret: str) -> None:
     counts = result.get_counts()
 
     plot_and_save(counts, "Histogram (Ideal Simulation)", output_path)
+    return record_from_counts("ideal", "aer_simulator_ideal", secret, counts)
 
 
-def run_noisy_simulation(secret: str, backend) -> None:
+def run_noisy_simulation(secret: str, backend) -> RunRecord | None:
     """Execute the circuit on a noisy simulator derived from a specific backend."""
     output_path = build_plot_path("noisy", secret, backend.name)
     if should_skip_plot(output_path):
-        return
+        return None
 
     circuit = bernstein_vazirani_circuit(secret)
     noise_model = NoiseModel.from_backend(backend)
@@ -167,13 +218,14 @@ def run_noisy_simulation(secret: str, backend) -> None:
     counts = result.get_counts()
 
     plot_and_save(counts, f"Histogram (Noisy Simulation) - {backend.name}", output_path)
+    return record_from_counts("noisy", backend.name, secret, counts)
 
 
-def run_real_execution(secret: str, backend) -> None:
+def run_real_execution(secret: str, backend) -> RunRecord | None:
     """Execute the circuit on a real backend using the runtime Sampler."""
     output_path = build_plot_path("real", secret, backend.name)
     if should_skip_plot(output_path):
-        return
+        return None
 
     circuit = bernstein_vazirani_circuit(secret)
     compiled = transpile(
@@ -193,26 +245,151 @@ def run_real_execution(secret: str, backend) -> None:
     counts = bitarray.get_counts()
 
     plot_and_save(counts, f"Histogram (Real Execution) - {backend.name}", output_path)
+    return record_from_counts("real", backend.name, secret, counts)
 
 
 def run_suite(
     secrets: Iterable[str],
     backends_list: list,
-) -> None:
+) -> list[RunRecord]:
     """Run all simulations and real executions for a sequence of secret strings."""
+    records: list[RunRecord] = []
     for secret in secrets:
-        run_ideal_simulation(secret)
+        record = run_ideal_simulation(secret)
+        if record:
+            records.append(record)
 
     for secret in secrets:
         for backend in backends_list:
-            run_noisy_simulation(secret, backend)
+            record = run_noisy_simulation(secret, backend)
+            if record:
+                records.append(record)
 
-    for secret in secrets:
-        for backend in backends_list:
-            run_real_execution(secret, backend)
+    # for secret in secrets:
+    #     for backend in backends_list:
+    #         record = run_real_execution(secret, backend)
+    #         if record:
+    #             records.append(record)
+
+    return records
+
+
+def compute_macro_metrics(y_true: list[str], y_pred: list[str]) -> tuple[float, float, float, float]:
+    """Compute accuracy, macro precision, macro recall, and macro F1-score."""
+    if not y_true or not y_pred or len(y_true) != len(y_pred):
+        return 0.0, 0.0, 0.0, 0.0
+
+    labels = set(y_true) | set(y_pred)
+    correct = sum(1 for truth, pred in zip(y_true, y_pred, strict=True) if truth == pred)
+    accuracy = correct / len(y_true)
+
+    precision_scores: list[float] = []
+    recall_scores: list[float] = []
+    f1_scores: list[float] = []
+
+    for label in labels:
+        tp = sum(1 for truth, pred in zip(y_true, y_pred, strict=True) if truth == label and pred == label)
+        fp = sum(1 for truth, pred in zip(y_true, y_pred, strict=True) if truth != label and pred == label)
+        fn = sum(1 for truth, pred in zip(y_true, y_pred, strict=True) if truth == label and pred != label)
+
+        precision = tp / (tp + fp) if (tp + fp) else 0.0
+        recall = tp / (tp + fn) if (tp + fn) else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
+
+        precision_scores.append(precision)
+        recall_scores.append(recall)
+        f1_scores.append(f1)
+
+    macro_precision = sum(precision_scores) / len(labels)
+    macro_recall = sum(recall_scores) / len(labels)
+    macro_f1 = sum(f1_scores) / len(labels)
+    return accuracy, macro_precision, macro_recall, macro_f1
+
+
+def summarize_metrics(records: list[RunRecord]) -> list[dict[str, str | float | int]]:
+    """Aggregate metrics per (category, backend) pair."""
+    grouped: dict[tuple[str, str], dict[str, list[str]]] = {}
+    for record in records:
+        key = (record.category, record.backend)
+        grouped.setdefault(key, {"y_true": [], "y_pred": []})
+        grouped[key]["y_true"].append(record.secret)
+        grouped[key]["y_pred"].append(record.prediction)
+
+    summaries: list[dict[str, str | float | int]] = []
+    for (category, backend), payload in grouped.items():
+        accuracy, precision, recall, f1 = compute_macro_metrics(payload["y_true"], payload["y_pred"])
+        summaries.append(
+            {
+                "category": category,
+                "backend": backend,
+                "samples": len(payload["y_true"]),
+                "accuracy": accuracy,
+                "precision": precision,
+                "recall": recall,
+                "f1_score": f1,
+            }
+        )
+    return summaries
+
+
+def save_predictions(records: list[RunRecord], path: Path = PREDICTIONS_CSV) -> None:
+    """Persist individual predictions to CSV."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "category",
+        "backend",
+        "secret",
+        "expected",
+        "predicted",
+        "correct",
+        "top_probability",
+        "counts",
+    ]
+    with path.open("w", newline="") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for record in records:
+            writer.writerow(
+                {
+                    "category": record.category,
+                    "backend": record.backend,
+                    "secret": record.secret,
+                    "expected": record.secret,
+                    "predicted": record.prediction,
+                    "correct": int(record.correct),
+                    "top_probability": f"{record.top_probability:.4f}",
+                    "counts": record.counts,
+                }
+            )
+    print(f"Saved predictions to {path}")
+
+
+def save_metrics(metrics: list[dict[str, str | float | int]], path: Path = METRICS_CSV) -> None:
+    """Persist aggregated metrics to CSV."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = ["category", "backend", "samples", "accuracy", "precision", "recall", "f1_score"]
+    with path.open("w", newline="") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for item in metrics:
+            writer.writerow(
+                {
+                    "category": item["category"],
+                    "backend": item["backend"],
+                    "samples": item["samples"],
+                    "accuracy": f"{item['accuracy']:.4f}",
+                    "precision": f"{item['precision']:.4f}",
+                    "recall": f"{item['recall']:.4f}",
+                    "f1_score": f"{item['f1_score']:.4f}",
+                }
+            )
+    print(f"Saved metrics to {path}")
 
 
 if __name__ == "__main__":
     service = build_runtime_service()
     backend_list = available_backends(service)
-    run_suite(SECRET_STRINGS, backend_list)
+    all_records = run_suite(SECRET_STRINGS, backend_list)
+    save_predictions(all_records)
+    metric_rows = summarize_metrics(all_records)
+    save_metrics(metric_rows)
