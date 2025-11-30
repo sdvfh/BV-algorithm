@@ -11,6 +11,7 @@ from collections.abc import Iterable
 import csv
 from dataclasses import dataclass
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -122,6 +123,8 @@ SECRET_STRINGS = [
 PREDICTIONS_CSV = RESULTS_ROOT / "bv_predictions.csv"
 METRICS_CSV = RESULTS_ROOT / "bv_metrics.csv"
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class RunRecord:
@@ -181,6 +184,7 @@ def build_runtime_service() -> QiskitRuntimeService:
     """Instantiate the IBM Runtime service, honoring an optional channel env var."""
     load_dotenv()
     channel = os.getenv("IBM_QUANTUM_SERVICE") or os.getenv("QISKIT_IBM_CHANNEL")
+    logger.info("Building QiskitRuntimeService with channel=%s", channel or "default")
     if channel:
         return QiskitRuntimeService(channel=channel)
     return QiskitRuntimeService()
@@ -191,7 +195,8 @@ def available_backends(service: QiskitRuntimeService):
     backend_map = {backend.name: backend for backend in service.backends()}
     missing = [name for name in TARGET_BACKENDS if name not in backend_map]
     if missing:
-        print(f"Backends not available and will be skipped: {', '.join(missing)}")
+        logger.warning("Skipping unavailable backends: %s", missing)
+    logger.info("Available backends selected: %s", [name for name in TARGET_BACKENDS if name in backend_map])
     return [backend_map[name] for name in TARGET_BACKENDS if name in backend_map]
 
 
@@ -211,6 +216,7 @@ def histogram_json_path(category: str, secret: str, backend_name: str | None = N
 
 def save_histogram_data(path: Path, counts: dict[str, int]) -> None:
     """Persist histogram counts to JSON."""
+    logger.debug("Saving histogram data to %s", path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         json.dump(counts, f, indent=2)
@@ -219,12 +225,15 @@ def save_histogram_data(path: Path, counts: dict[str, int]) -> None:
 def load_histogram_data(path: Path) -> dict[str, int] | None:
     """Load histogram counts from JSON if available."""
     if not path.exists():
+        logger.debug("Histogram cache miss at %s", path)
         return None
     try:
         with path.open("r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+            logger.debug("Loaded histogram cache from %s", path)
+            return data
     except Exception as err:
-        print(f"Failed to read histogram data from {path}: {err}")
+        logger.warning("Failed to read histogram data from %s: %s", path, err)
         return None
 
 
@@ -237,7 +246,7 @@ def plot_and_save(counts, title: str, output_path: Path) -> None:
     plt.tight_layout()
     plt.savefig(output_path)
     plt.close()
-    print(f"Saved plot to {output_path}")
+    logger.info("Saved plot to %s", output_path)
 
 
 def predict_from_counts(counts: dict[str, int]) -> str:
@@ -264,8 +273,10 @@ def run_ideal_simulation(secret: str) -> RunRecord | None:
     json_path = histogram_json_path("ideal", secret)
     cached = load_histogram_data(json_path)
     if cached is not None:
+        logger.info("Using cached ideal simulation for secret %s", secret)
         return record_from_counts("ideal", "aer_simulator_ideal", secret, cached)
 
+    logger.info("Running ideal simulation for secret %s", secret)
     circuit = bernstein_vazirani_circuit(secret)
     backend = AerSimulator(seed_simulator=DEFAULT_SEED)
     compiled = transpile(
@@ -288,8 +299,10 @@ def run_noisy_simulation(secret: str, backend) -> RunRecord | None:
     json_path = histogram_json_path("noisy", secret, backend_name=backend.name)
     cached = load_histogram_data(json_path)
     if cached is not None:
+        logger.info("Using cached noisy simulation for secret %s backend %s", secret, backend.name)
         return record_from_counts("noisy", backend.name, secret, cached)
 
+    logger.info("Running noisy simulation for secret %s backend %s", secret, backend.name)
     circuit = bernstein_vazirani_circuit(secret)
     noise_model = NoiseModel.from_backend(backend)
     noisy_backend = AerSimulator(noise_model=noise_model, seed_simulator=DEFAULT_SEED)
@@ -315,8 +328,10 @@ def run_real_execution(secret: str, backend) -> RunRecord | None:
     json_path = histogram_json_path("real", secret, backend_name=backend.name)
     cached = load_histogram_data(json_path)
     if cached is not None:
+        logger.info("Using cached real execution for secret %s backend %s", secret, backend.name)
         return record_from_counts("real", backend.name, secret, cached)
 
+    logger.info("Running real execution for secret %s backend %s", secret, backend.name)
     circuit = bernstein_vazirani_circuit(secret)
     compiled = transpile(
         circuit,
@@ -340,6 +355,7 @@ def run_real_execution(secret: str, backend) -> RunRecord | None:
 
 def run_readout_noise_simulations(secret: str) -> list[RunRecord]:
     """Execute the circuit on an ideal simulator with injected readout error levels."""
+    logger.info("Running readout noise sweep for secret %s", secret)
     circuit = bernstein_vazirani_circuit(secret)
     records: list[RunRecord] = []
     counts_by_level: dict[str, dict[str, int]] = {}
@@ -370,6 +386,7 @@ def run_readout_noise_simulations(secret: str) -> list[RunRecord]:
         if cached_counts is not None:
             counts = cached_counts
         else:
+            logger.debug("Simulating readout noise level %s (p=%s) for secret %s", level, probability, secret)
             noise_model = build_readout_noise_model(probability)
             backend = AerSimulator(noise_model=noise_model, seed_simulator=DEFAULT_SEED)
             pass_manager = generate_preset_pass_manager(
@@ -410,6 +427,7 @@ def build_custom_noise_model(noise_kind: str, level: str) -> NoiseModel:
     if level not in LEVEL_MULTIPLIERS:
         raise ValueError(f"Unknown noise level {level}")
     mult = LEVEL_MULTIPLIERS[level]
+    logger.debug("Building custom noise model kind=%s level=%s multiplier=%s", noise_kind, level, mult)
     noise_model = NoiseModel()
 
     if noise_kind == "readout":
@@ -635,6 +653,7 @@ def plot_backend_comparison(
 
 def run_custom_noise_simulations(secret: str, ideal_counts: dict[str, int]) -> list[RunRecord]:
     """Execute the circuit with multiple custom noise kinds and levels."""
+    logger.info("Running custom noise sweeps for secret %s", secret)
     circuit = bernstein_vazirani_circuit(secret)
     records: list[RunRecord] = []
     ordered_levels = list(READOUT_NOISE_LEVELS.keys())
@@ -647,6 +666,7 @@ def run_custom_noise_simulations(secret: str, ideal_counts: dict[str, int]) -> l
             if cached_counts is not None:
                 counts = cached_counts
             else:
+                logger.debug("Simulating noise=%s level=%s for secret %s", noise_kind, level, secret)
                 noise_model = build_custom_noise_model(noise_kind, level)
                 backend = AerSimulator(noise_model=noise_model, seed_simulator=DEFAULT_SEED)
                 pass_manager = generate_preset_pass_manager(
@@ -674,19 +694,21 @@ def run_suite(
     backends_list: list,
 ) -> list[RunRecord]:
     """Run simulations first (ideal, emulated, noise sweeps) then real executions."""
+    secrets_list = list(secrets)
+    logger.info("Starting full suite for %d secrets across %d backends", len(secrets_list), len(backends_list))
     records: list[RunRecord] = []
     ideal_counts_map: dict[str, dict[str, int]] = {}
     emulated_counts_map: dict[tuple[str, str], dict[str, int]] = {}
 
     # Ideal baseline for metrics and overlays.
-    for secret in secrets:
+    for secret in secrets_list:
         record = run_ideal_simulation(secret)
         if record:
             records.append(record)
             ideal_counts_map[secret] = record.counts
 
     # Emulated backends with overlays from ideal; no real execution yet.
-    for secret in secrets:
+    for secret in secrets_list:
         ideal_counts = ideal_counts_map.get(secret, {})
         for backend in backends_list:
             noisy_record = run_noisy_simulation(secret, backend)
@@ -702,23 +724,23 @@ def run_suite(
                 )
 
     # Readout noise sweeps (now under custom_noise/readout) with ideal overlay.
-    for secret in secrets:
+    for secret in secrets_list:
         records.extend(run_readout_noise_simulations(secret))
 
     # Custom noise sweeps (depolarizing, amplitude/phase damping, thermal, gate-specific).
-    for secret in secrets:
+    for secret in secrets_list:
         ideal_counts = ideal_counts_map.get(secret, {})
         records.extend(run_custom_noise_simulations(secret, ideal_counts))
 
     # Real executions only after all simulations and plots are complete.
-    for secret in secrets:
+    for secret in secrets_list:
         ideal_counts = ideal_counts_map.get(secret, {})
         for backend in backends_list:
             real_record = None
             try:
                 real_record = run_real_execution(secret, backend)
-            except Exception as err:
-                print(f"Real execution failed on {backend.name} for secret {secret}: {err}")
+            except Exception:
+                logger.exception("Real execution failed on %s for secret %s", backend.name, secret)
             if real_record:
                 records.append(real_record)
                 emulated_counts = emulated_counts_map.get((secret, backend.name), {})
@@ -796,6 +818,7 @@ def summarize_metrics(records: list[RunRecord]) -> list[dict[str, str | float | 
 
 def save_predictions(records: list[RunRecord], path: Path = PREDICTIONS_CSV) -> None:
     """Persist individual predictions to CSV."""
+    logger.info("Saving predictions for %d records to %s", len(records), path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
         "category",
@@ -828,11 +851,12 @@ def save_predictions(records: list[RunRecord], path: Path = PREDICTIONS_CSV) -> 
                     "counts": record.counts,
                 }
             )
-    print(f"Saved predictions to {path}")
+    logger.info("Saved predictions to %s", path)
 
 
 def save_metrics(metrics: list[dict[str, str | float | int]], path: Path = METRICS_CSV) -> None:
     """Persist aggregated metrics to CSV."""
+    logger.info("Saving metrics for %d rows to %s", len(metrics), path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
         "category",
@@ -862,7 +886,7 @@ def save_metrics(metrics: list[dict[str, str | float | int]], path: Path = METRI
                     "f1_score": f"{item['f1_score']:.4f}",
                 }
             )
-    print(f"Saved metrics to {path}")
+    logger.info("Saved metrics to %s", path)
 
 
 def parse_noise_info(category: str, backend: str) -> tuple[str | None, str | None]:
@@ -880,6 +904,10 @@ def parse_noise_info(category: str, backend: str) -> tuple[str | None, str | Non
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=os.getenv("BV_LOG_LEVEL", "DEBUG").upper(),
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
+    )
     service = build_runtime_service()
     backend_list = available_backends(service)
     all_records = run_suite(SECRET_STRINGS, backend_list)
