@@ -58,11 +58,11 @@ IDEAL_OVERLAY_COLOR = READOUT_IDEAL_COLOR
 EMULATED_COLOR = "#1f77b4"
 REAL_OVERLAY_COLOR = "#c43c39"
 LEVEL_MULTIPLIERS = {
-    "ultra-low": 0.5,
-    "low": 1.0,
-    "medium": 2.0,
-    "high": 4.0,
-    "very-high": 8.0,
+    "ultra-low": 1.0,
+    "low": 5.0,
+    "medium": 10.0,
+    "high": 50.0,
+    "very-high": 100.0,
 }
 # Baselines anchored on real hardware (fez/torino) so "low" matches typical errors.
 BASE_READOUT_P = 0.02  # ~torino median
