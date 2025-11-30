@@ -44,6 +44,7 @@ READOUT_COLORS = {
     "high": "#d62728",
     "very-high": "#9467bd",
 }
+READOUT_IDEAL_COLOR = "#f1c40f"  # bright gold to stand apart from error scale
 SECRET_STRINGS = [
     "10000",
     # "01000",
@@ -270,6 +271,20 @@ def run_readout_noise_simulations(secret: str) -> list[RunRecord]:
     circuit = bernstein_vazirani_circuit(secret)
     records: list[RunRecord] = []
     counts_by_level: dict[str, dict[str, int]] = {}
+    ideal_counts: dict[str, int] = {}
+
+    # Ideal baseline for overlaying on the histogram.
+    ideal_backend = AerSimulator(seed_simulator=DEFAULT_SEED)
+    ideal_pm = generate_preset_pass_manager(
+        optimization_level=3,
+        backend=ideal_backend,
+        layout_method="sabre",
+        routing_method="sabre",
+        seed_transpiler=DEFAULT_SEED,
+    )
+    ideal_compiled = ideal_pm.run(circuit)
+    ideal_result = ideal_backend.run(ideal_compiled, shots=DEFAULT_SHOTS, seed_simulator=DEFAULT_SEED).result()
+    ideal_counts = ideal_result.get_counts()
 
     for level, probability in READOUT_NOISE_LEVELS.items():
         noise_model = build_readout_noise_model(probability)
@@ -288,7 +303,7 @@ def run_readout_noise_simulations(secret: str) -> list[RunRecord]:
         counts_by_level[level] = counts
         records.append(record_from_counts("readout_noise", f"aer_readout_{level}", secret, counts))
 
-    plot_readout_sweep(secret, counts_by_level)
+    plot_readout_sweep(secret, counts_by_level, ideal_counts)
     return records
 
 
@@ -343,12 +358,16 @@ def render_horizontal_histogram(
     plt.close(fig)
 
 
-def plot_readout_sweep(secret: str, counts_by_level: dict[str, dict[str, int]]) -> None:
-    """Create a single figure concatenating histograms for all readout error levels."""
+def plot_readout_sweep(secret: str, counts_by_level: dict[str, dict[str, int]], ideal_counts: dict[str, int]) -> None:
+    """Create a single figure concatenating histograms for all readout error levels plus ideal."""
     ordered_levels = list(READOUT_NOISE_LEVELS.keys())
     counts_list: list[dict[int, int]] = []
     legends: list[str] = []
     colors: list[str] = []
+    if ideal_counts:
+        counts_list.append({int(bitstring, 2): value for bitstring, value in ideal_counts.items()})
+        legends.append("ideal")
+        colors.append(READOUT_IDEAL_COLOR)
     for level in ordered_levels:
         if level in counts_by_level:
             numeric_counts = {int(bitstring, 2): value for bitstring, value in counts_by_level[level].items()}
