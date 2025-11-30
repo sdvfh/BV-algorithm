@@ -541,7 +541,7 @@ def render_horizontal_histogram(
     ax.set_yticks(y_positions)
     ax.set_yticklabels([format(key, f"0{bit_width}b") for key in all_keys])
     ax.set_xlabel("Contagens")
-    ax.set_ylabel("Cadeia de bits")
+    ax.set_ylabel("Bitstring")
     if legends and len(legends) > 1:
         ax.legend(title=legend_title)
     ax.grid(axis="x", linestyle="--", linewidth=0.8, color="#999999", alpha=0.6, zorder=0)
