@@ -1,9 +1,8 @@
 """Bernstein-Vazirani experiment runner with metrics and plotting.
 
-Original behavior (plot generation with skip-if-exists) is preserved. Added:
-- capture of predicted secrets for each run (ideal, noisy, readout-injected, real)
-- computation of accuracy, precision, recall, and F1-score vs. expected secrets
-- CSV summaries for per-run predictions and aggregated metrics
+Executes a suite of secret strings across simulators, custom noise models, and
+IBM hardware samplers, capturing predicted secrets, classification metrics, and
+serialized histogram data suitable for analysis and reporting.
 """
 
 from __future__ import annotations
@@ -174,7 +173,7 @@ def bernstein_vazirani_circuit(secret: str) -> QuantumCircuit:
 def build_runtime_service() -> QiskitRuntimeService:
     """Instantiate the IBM Runtime service, honoring an optional channel env var."""
     load_dotenv()
-    channel = os.getenv("IBM_QUANTUM_SERVICE")
+    channel = os.getenv("QISKIT_IBM_CHANNEL")
     if channel:
         return QiskitRuntimeService(channel=channel)
     return QiskitRuntimeService()
