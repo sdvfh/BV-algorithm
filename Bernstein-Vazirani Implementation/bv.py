@@ -350,7 +350,7 @@ def run_readout_noise_simulations(secret: str) -> list[RunRecord]:
         save_histogram_data(ideal_json, ideal_counts)
 
     for level, probability in READOUT_NOISE_LEVELS.items():
-        json_path = histogram_json_path("readout_noise", secret, tag=level)
+        json_path = histogram_json_path("custom_noise", secret, tag=f"readout_{level}")
         cached_counts = load_histogram_data(json_path)
         if cached_counts is not None:
             counts = cached_counts
@@ -370,7 +370,7 @@ def run_readout_noise_simulations(secret: str) -> list[RunRecord]:
             counts = result.get_counts()
             save_histogram_data(json_path, counts)
         counts_by_level[level] = counts
-        records.append(record_from_counts("readout_noise", f"aer_readout_{level}", secret, counts))
+        records.append(record_from_counts("custom_noise_readout", f"readout_{level}", secret, counts))
 
     plot_readout_sweep(secret, counts_by_level, ideal_counts)
     return records
@@ -522,7 +522,7 @@ def plot_readout_sweep(secret: str, counts_by_level: dict[str, dict[str, int]], 
     if not counts_list:
         return
     title = f"Readout error sweep - secret {secret}"
-    save_path = RESULTS_ROOT / "readout_noise" / f"{secret}_readout_sweep.png"
+    save_path = RESULTS_ROOT / "custom_noise" / "readout" / f"{secret}_readout_sweep.png"
     render_horizontal_histogram(counts_list, legends, colors, title, save_path)
 
 
@@ -660,7 +660,7 @@ def run_suite(
                     real_counts=real_record.counts if real_record else None,
                 )
 
-    # Readout noise sweeps with ideal overlay.
+    # Readout noise sweeps (now under custom_noise/readout) with ideal overlay.
     for secret in secrets:
         records.extend(run_readout_noise_simulations(secret))
 
@@ -716,6 +716,7 @@ def summarize_metrics(records: list[RunRecord]) -> list[dict[str, str | float | 
     summaries: list[dict[str, str | float | int]] = []
     for (category, backend), payload in grouped.items():
         accuracy, precision, recall, f1 = compute_macro_metrics(payload["y_true"], payload["y_pred"])
+        noise_kind, noise_level = parse_noise_info(category, backend)
         summaries.append(
             {
                 "category": category,
@@ -725,6 +726,8 @@ def summarize_metrics(records: list[RunRecord]) -> list[dict[str, str | float | 
                 "precision": precision,
                 "recall": recall,
                 "f1_score": f1,
+                "noise_kind": noise_kind or "",
+                "noise_level": noise_level or "",
             }
         )
     return summaries
@@ -736,6 +739,8 @@ def save_predictions(records: list[RunRecord], path: Path = PREDICTIONS_CSV) -> 
     fieldnames = [
         "category",
         "backend",
+        "noise_kind",
+        "noise_level",
         "secret",
         "expected",
         "predicted",
@@ -747,10 +752,13 @@ def save_predictions(records: list[RunRecord], path: Path = PREDICTIONS_CSV) -> 
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
         for record in records:
+            noise_kind, noise_level = parse_noise_info(record.category, record.backend)
             writer.writerow(
                 {
                     "category": record.category,
                     "backend": record.backend,
+                    "noise_kind": noise_kind or "",
+                    "noise_level": noise_level or "",
                     "secret": record.secret,
                     "expected": record.secret,
                     "predicted": record.prediction,
@@ -765,7 +773,17 @@ def save_predictions(records: list[RunRecord], path: Path = PREDICTIONS_CSV) -> 
 def save_metrics(metrics: list[dict[str, str | float | int]], path: Path = METRICS_CSV) -> None:
     """Persist aggregated metrics to CSV."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["category", "backend", "samples", "accuracy", "precision", "recall", "f1_score"]
+    fieldnames = [
+        "category",
+        "backend",
+        "noise_kind",
+        "noise_level",
+        "samples",
+        "accuracy",
+        "precision",
+        "recall",
+        "f1_score",
+    ]
     with path.open("w", newline="") as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
@@ -774,6 +792,8 @@ def save_metrics(metrics: list[dict[str, str | float | int]], path: Path = METRI
                 {
                     "category": item["category"],
                     "backend": item["backend"],
+                    "noise_kind": item.get("noise_kind", ""),
+                    "noise_level": item.get("noise_level", ""),
                     "samples": item["samples"],
                     "accuracy": f"{item['accuracy']:.4f}",
                     "precision": f"{item['precision']:.4f}",
@@ -782,6 +802,20 @@ def save_metrics(metrics: list[dict[str, str | float | int]], path: Path = METRI
                 }
             )
     print(f"Saved metrics to {path}")
+
+
+def parse_noise_info(category: str, backend: str) -> tuple[str | None, str | None]:
+    """Derive noise kind and intensity level from category/backend naming."""
+    if category.startswith("custom_noise_readout") and "_" in backend:
+        _, level = backend.split("_", 1)
+        return "readout", level
+    if category.startswith("custom_noise") and "_" in backend:
+        kind, level = backend.split("_", 1)
+        return kind, level
+    if category == "noisy":
+        # Backend name is the identifier; no discrete level provided.
+        return "backend_noise", ""
+    return None, None
 
 
 if __name__ == "__main__":
