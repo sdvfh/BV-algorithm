@@ -669,9 +669,10 @@ def run_suite(
     secrets: Iterable[str],
     backends_list: list,
 ) -> list[RunRecord]:
-    """Run all simulations and real executions for a sequence of secret strings."""
+    """Run simulations first (ideal, emulated, noise sweeps) then real executions."""
     records: list[RunRecord] = []
     ideal_counts_map: dict[str, dict[str, int]] = {}
+    emulated_counts_map: dict[tuple[str, str], dict[str, int]] = {}
 
     # Ideal baseline for metrics and overlays.
     for secret in secrets:
@@ -680,27 +681,20 @@ def run_suite(
             records.append(record)
             ideal_counts_map[secret] = record.counts
 
-    # Emulated backends, with overlays from ideal and optional real execution.
+    # Emulated backends with overlays from ideal; no real execution yet.
     for secret in secrets:
         ideal_counts = ideal_counts_map.get(secret, {})
         for backend in backends_list:
             noisy_record = run_noisy_simulation(secret, backend)
-            real_record = None
-            try:
-                real_record = run_real_execution(secret, backend)
-            except Exception as err:
-                print(f"Real execution failed on {backend.name} for secret {secret}: {err}")
             if noisy_record:
                 records.append(noisy_record)
-            if real_record:
-                records.append(real_record)
-            if noisy_record:
+                emulated_counts_map[(secret, backend.name)] = noisy_record.counts
                 plot_backend_comparison(
                     secret,
                     backend.name,
                     ideal_counts=ideal_counts,
                     emulated_counts=noisy_record.counts,
-                    real_counts=real_record.counts if real_record else None,
+                    real_counts=None,
                 )
 
     # Readout noise sweeps (now under custom_noise/readout) with ideal overlay.
@@ -711,6 +705,26 @@ def run_suite(
     for secret in secrets:
         ideal_counts = ideal_counts_map.get(secret, {})
         records.extend(run_custom_noise_simulations(secret, ideal_counts))
+
+    # Real executions only after all simulations and plots are complete.
+    for secret in secrets:
+        ideal_counts = ideal_counts_map.get(secret, {})
+        for backend in backends_list:
+            real_record = None
+            try:
+                real_record = run_real_execution(secret, backend)
+            except Exception as err:
+                print(f"Real execution failed on {backend.name} for secret {secret}: {err}")
+            if real_record:
+                records.append(real_record)
+                emulated_counts = emulated_counts_map.get((secret, backend.name), {})
+                plot_backend_comparison(
+                    secret,
+                    backend.name,
+                    ideal_counts=ideal_counts,
+                    emulated_counts=emulated_counts,
+                    real_counts=real_record.counts,
+                )
 
     return records
 
