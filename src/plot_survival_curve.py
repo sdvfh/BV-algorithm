@@ -32,11 +32,12 @@ NOISE_LEVEL_TRANSLATIONS = {
 
 # Quais tipos de ruído traçar e como nomeá-los na legenda
 NOISE_KINDS_OF_INTEREST: dict[str, str] = {
-    "cx_gate": "CX gate",
-    "h_gate": "H gate",
-    "amplitude_damping": "Amplitude damping",
-    "phase_damping": "Phase damping",
-    "readout": "Readout",
+    "cx_gate": "Porta CX",
+    "h_gate": "Porta H",
+    "sx_gate": "Porta SX",
+    "amplitude_damping": "Amortecimento de amplitude",
+    "phase_damping": "Amortecimento de fase",
+    "readout": "Leitura",
 }
 
 # Se presente, usamos este segredo como "pior caso"; caso contrário, usamos a média
@@ -102,8 +103,7 @@ def pick_value_for_group(group: pd.DataFrame) -> float:
 def build_survival_dataframe(df: pd.DataFrame, baseline: float | None) -> pd.DataFrame:
     """Cria um dataframe agregado pronto para plotar (inclui ponto ideal se existir)."""
     df["noise_kind"], df["noise_level"] = zip(
-        *df.apply(lambda row: extract_noise_info(row["category"], row["backend"]), axis=1),
-        strict=True
+        *df.apply(lambda row: extract_noise_info(row["category"], row["backend"]), axis=1), strict=True
     )
     df = df.dropna(subset=["noise_kind", "noise_level"])
 
@@ -117,7 +117,9 @@ def build_survival_dataframe(df: pd.DataFrame, baseline: float | None) -> pd.Dat
     df["noise_level"] = pd.Categorical(df["noise_level"], categories=NOISE_LEVEL_ORDER, ordered=True)
 
     grouped = (
-        df.groupby(["noise_kind", "noise_level"]).apply(pick_value_for_group).reset_index(name="success_probability")
+        df.groupby(["noise_kind", "noise_level"], observed=True)[["secret", "success_probability"]]
+        .apply(pick_value_for_group)
+        .reset_index(name="success_probability")
     )
 
     # Inserir ponto ideal (baseline) para cada noise_kind, se existir
@@ -160,20 +162,19 @@ def plot_survival_curve():
     plt.figure(figsize=(10, 6))
 
     palette = sns.color_palette("colorblind", n_colors=survival_df["Noise"].nunique())
+    markers = ["o", "s", "D", "^", "v", "P"]
     # Linhas com estilos distintos para evitar sobreposição visual
-    dashes = ["", (4, 2), (2, 2), (6, 2, 2, 2), (1, 1)]  # sólido, tracejado etc.
-    for (noise, df_noise), dash, color in zip(
-        survival_df.groupby("Noise"),
-        dashes * 2,
-        palette,  # repete padrão se precisar
-        strict=True
-    ):
+    dashes = ["", (4, 2), (2, 2), (6, 2, 2, 2), (1, 1), (5, 1, 1, 1)]  # sólido, tracejado etc.
+    for idx, (noise, df_noise) in enumerate(survival_df.groupby("Noise")):
+        dash = dashes[idx % len(dashes)]
+        color = palette[idx % len(palette)]
+        marker = markers[idx % len(markers)]
         sns.lineplot(
             data=df_noise,
             x="noise_level",
             y="success_probability",
             label=noise,
-            marker="o",
+            marker=marker,
             linewidth=2.5,
             markersize=8,
             color=color,
@@ -183,7 +184,7 @@ def plot_survival_curve():
     plt.xlabel("Nível de ruído")
     plt.ylabel("Probabilidade de sucesso (acerto do segredo)")
     plt.ylim(0, 1.05)
-    plt.legend(title="Tipo de ruído", bbox_to_anchor=(1.05, 1), loc="upper left")
+    plt.legend(title="Tipo de ruído")
     # Tradução dos ticks conforme bv.py
     locs, labels = plt.xticks()
     translated = [NOISE_LEVEL_TRANSLATIONS.get(lbl.get_text(), lbl.get_text()) for lbl in labels]
