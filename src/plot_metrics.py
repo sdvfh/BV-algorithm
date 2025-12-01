@@ -81,12 +81,22 @@ def plot_hamming_trend():
     df_filtered = df_filtered.dropna(subset=["hamming_weight", "success_probability"])
 
     # 5. Criar nome legível para a legenda
-    # Ex: "ibm_torino (real)" ou "ibm_torino (emulated)"
+    # Ex: "ibm_torino (Real)" ou "ibm_torino (Emulação)"
     def get_label(row):
         mode = "real" if row["category"] == "real" else "emulado"
         return f"{row['backend']} ({mode})"
 
     df_filtered["Legenda"] = df_filtered.apply(get_label, axis=1)
+
+    # Marcadores fixos por backend, cores fixas por categoria (real vs emulado)
+    backend_markers = {"ibm_torino": "o", "ibm_fez": "s"}
+    # Cores alinhadas ao bv.py: real vermelho, emulado azul
+    category_colors = {"real": "#c43c39", "noisy": "#1f77b4"}
+
+    legend_to_backend = df_filtered.set_index("Legenda")["backend"].to_dict()
+    legend_to_category = df_filtered.set_index("Legenda")["category"].to_dict()
+    palette = {label: category_colors.get(cat, "#555555") for label, cat in legend_to_category.items()}
+    markers = {label: backend_markers.get(backend, "o") for label, backend in legend_to_backend.items()}
 
     # 6. Plotar
     plt.figure(figsize=(10, 6))
@@ -99,7 +109,8 @@ def plot_hamming_trend():
         y="success_probability",
         hue="Legenda",
         style="Legenda",
-        markers=True,
+        palette=palette,
+        markers=markers,
         dashes=False,
         linewidth=2.5,
         markersize=9,
@@ -112,7 +123,7 @@ def plot_hamming_trend():
     plt.ylabel("Probabilidade de sucesso (acerto do segredo)", fontsize=12)
     plt.ylim(0, 1.05)
     plt.xticks(range(max_weight + 1))
-    plt.legend(title="Ambiente", bbox_to_anchor=(1.05, 1), loc="upper left")
+    plt.legend(title="Modo")
     plt.tight_layout()
 
     save_path = OUTPUT_DIR / "hamming_weight_trend.png"
