@@ -2,6 +2,7 @@ import ast
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
 
@@ -47,6 +48,24 @@ def calculate_success_probability(secret, raw_counts):
     except Exception:
         return None
     return correct / total_shots if total_shots else None
+
+
+def bootstrap_slope_confidence(x_vals: np.ndarray, y_vals: np.ndarray, n_boot: int = 2000) -> tuple[float, float]:
+    """Bootstrap simple linear slope confidence interval."""
+    rng = np.random.default_rng(42)
+    slopes: list[float] = []
+    for _ in range(n_boot):
+        idx = rng.integers(0, len(x_vals), size=len(x_vals))
+        x_sample = x_vals[idx]
+        y_sample = y_vals[idx]
+        if np.std(x_sample) == 0:
+            continue
+        slope, _ = np.polyfit(x_sample, y_sample, 1)
+        slopes.append(slope)
+    if not slopes:
+        return float("nan"), float("nan")
+    lower, upper = np.percentile(slopes, [2.5, 97.5])
+    return float(lower), float(upper)
 
 
 def plot_hamming_trend():
@@ -112,6 +131,31 @@ def plot_hamming_trend():
                 s=120,
                 linewidths=1.4,
                 marker="o",
+            )
+
+        # Linha de tendência para pontos reais
+        real_points = group[group["Ambiente"] == "Real"]
+        if len(real_points) >= 3:
+            x_vals = real_points["hamming_weight"].to_numpy(dtype=float)
+            y_vals = real_points["success_probability"].to_numpy(dtype=float)
+            slope, intercept = np.polyfit(x_vals, y_vals, 1)
+            x_line = np.linspace(x_vals.min(), x_vals.max(), 100)
+            y_line = slope * x_line + intercept
+            plt.plot(
+                x_line,
+                y_line,
+                color="#b22222",
+                linestyle="--",
+                linewidth=1.6,
+                label="Tendência (Real)",
+            )
+            corr = np.corrcoef(x_vals, y_vals)[0, 1]
+            r2 = corr * corr if not np.isnan(corr) else np.nan
+            ci_low, ci_high = bootstrap_slope_confidence(x_vals, y_vals)
+            significance = " (significativo)" if ci_low > 0 or ci_high < 0 else ""
+            print(
+                f"{backend_name}: tendência Real -> slope={slope:.4f}, R^2={r2:.4f}, "
+                f"IC95% slope=[{ci_low:.4f}, {ci_high:.4f}]{significance}"
             )
 
         max_weight = int(group["hamming_weight"].max()) if not group.empty else 0
