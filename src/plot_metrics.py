@@ -80,55 +80,52 @@ def plot_hamming_trend():
     )
     df_filtered = df_filtered.dropna(subset=["hamming_weight", "success_probability"])
 
-    # 5. Criar nome legível para a legenda
-    # Ex: "ibm_torino (Real)" ou "ibm_torino (Emulação)"
+    # 5. Criar nome legível e ambiente
     def get_label(row):
-        mode = "real" if row["category"] == "real" else "emulado"
+        mode = "Real" if row["category"] == "real" else "Emulado"
         return f"{row['backend']} ({mode})"
 
     df_filtered["Legenda"] = df_filtered.apply(get_label, axis=1)
-
-    # Marcadores fixos por backend, cores fixas por categoria (real vs emulado)
-    backend_markers = {"ibm_torino": "o", "ibm_fez": "s"}
-    # Cores alinhadas ao bv.py: real vermelho, emulado azul
-    category_colors = {"real": "#c43c39", "noisy": "#1f77b4"}
-
-    legend_to_backend = df_filtered.set_index("Legenda")["backend"].to_dict()
-    legend_to_category = df_filtered.set_index("Legenda")["category"].to_dict()
-    palette = {label: category_colors.get(cat, "#555555") for label, cat in legend_to_category.items()}
-    markers = {label: backend_markers.get(backend, "o") for label, backend in legend_to_backend.items()}
-
-    # 6. Plotar
-    plt.figure(figsize=(10, 6))
-    sns.set_style("whitegrid")
-
-    # Gráfico de linha com intervalo de confiança (se houver múltiplas execuções) ou pontos
-    sns.lineplot(
-        data=df_filtered,
-        x="hamming_weight",
-        y="success_probability",
-        hue="Legenda",
-        style="Legenda",
-        palette=palette,
-        markers=markers,
-        dashes=False,
-        linewidth=2.5,
-        markersize=9,
+    df_filtered["Ambiente"] = (
+        df_filtered["category"].map({"real": "Real", "noisy": "Emulação"}).fillna(df_filtered["category"])
     )
 
-    max_weight = int(df_filtered["hamming_weight"].max()) if not df_filtered.empty else 0
+    # 6. Plotar separado por backend
+    sns.set_style("whitegrid")
+    for backend_name, group in df_filtered.groupby("backend"):
+        if group.empty:
+            continue
 
-    # plt.title('Impacto do Peso de Hamming na Fidelidade do Algoritmo', fontsize=14)
-    plt.xlabel("Peso de Hamming (Número de portas CNOT)", fontsize=12)
-    plt.ylabel("Probabilidade de sucesso (acerto do segredo)", fontsize=12)
-    plt.ylim(0, 1.05)
-    plt.xticks(range(max_weight + 1))
-    plt.legend(title="Modo")
-    plt.tight_layout()
+        plt.figure(figsize=(10, 6))
+        # Gráfico de dispersão (scatter) por processador, usando marcadores ocos
+        category_colors = {"Real": "#c43c39", "Emulação": "#1f77b4"}
+        for ambiente, subset in group.groupby("Ambiente"):
+            if subset.empty:
+                continue
+            color = category_colors.get(ambiente, "#555555")
+            plt.scatter(
+                subset["hamming_weight"],
+                subset["success_probability"],
+                label=ambiente,
+                facecolors="none",
+                edgecolors=color,
+                s=120,
+                linewidths=1.4,
+                marker="o",
+            )
 
-    save_path = OUTPUT_DIR / "hamming_weight_trend.png"
-    plt.savefig(save_path, dpi=300)
-    print(f"Gráfico salvo em: {save_path}")
+        max_weight = int(group["hamming_weight"].max()) if not group.empty else 0
+
+        plt.xlabel("Peso de Hamming (número de portas CNOT)", fontsize=12)
+        plt.ylabel("Probabilidade de sucesso (acerto do segredo)", fontsize=12)
+        plt.ylim(0, 1.05)
+        plt.xticks(range(max_weight + 1))
+        plt.legend(title="Modo", loc="lower left")
+        plt.tight_layout()
+
+        save_path = OUTPUT_DIR / f"hamming_weight_trend_{backend_name}.png"
+        plt.savefig(save_path, dpi=300)
+        print(f"Gráfico salvo em: {save_path}")
 
 
 if __name__ == "__main__":
