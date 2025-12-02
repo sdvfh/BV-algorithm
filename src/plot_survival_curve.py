@@ -36,8 +36,8 @@ NOISE_KINDS_OF_INTEREST: dict[str, str] = {
     "cx_gate": "Porta CX",
     "h_gate": "Porta H",
     "sx_gate": "Porta SX",
-    "amplitude_damping": "Amortecimento de amplitude",
-    "phase_damping": "Amortecimento de fase",
+    "amplitude_damping": "Perda de amplitude",
+    "phase_damping": "Perda de fase",
     "readout": "Leitura",
 }
 
